@@ -1,0 +1,5 @@
+type: release-binary
+source_repo: nezhahq/agent
+asset_pattern: nezha-agent_linux_amd64\.zip
+target_path: .  # ← сохранять прямо в эту папку
+keep_versions: 2
