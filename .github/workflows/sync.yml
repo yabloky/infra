@@ -91,14 +91,17 @@ jobs:
               if [[ "$SOURCE" == ghcr.io/* ]]; then
                 OWNER_REPO="${SOURCE#ghcr.io/}"
                 TAGS=$(curl -s -H "Authorization: Bearer $(echo ${{ secrets.GITHUB_TOKEN }} | base64 -w0)" \
-                  "https://ghcr.io/v2/${OWNER_REPO}/tags/list" | jq -r '.tags[]?' | grep -E '^[vV]?[0-9]+' | sort -Vr)
+                  "https://ghcr.io/v2/${OWNER_REPO}/tags/list" | jq -r '.tags[]?' | \
+                  grep -E '^[vV]?[0-9]+(\.[0-9]+)*$' | \
+                  grep -v -E '[a-zA-Z]' | sort -Vr)
               else
-                # Docker Hub
                 IMAGE="${SOURCE#docker.io/}"
                 IMAGE="${IMAGE#library/}"
                 REPO="${IMAGE%%:*}"
                 TAGS=$(curl -s "https://hub.docker.com/v2/repositories/${REPO}/tags/?page_size=100" \
-                  | jq -r '.results[].name' | grep -E '^[0-9]+\.[0-9]+.*$' | sort -Vr)
+                  | jq -r '.results[].name' | \
+                  grep -E '^[vV]?[0-9]+(\.[0-9]+)*$' | \
+                  grep -v -E '[a-zA-Z]' | sort -Vr)
               fi
 
               if [ -z "$TAGS" ]; then
