@@ -64,11 +64,12 @@ jobs:
           case "$TYPE" in
             container)
               echo "Syncing container: $SOURCE → $TARGET"
-              # GHCR
+
+              # Определяем источник: GHCR или Docker Hub
               if [[ "$SOURCE" == ghcr.io/* ]]; then
                 OWNER_REPO="${SOURCE#ghcr.io/}"
                 TAGS=$(curl -s -H "Authorization: Bearer $(echo ${{ secrets.GITHUB_TOKEN }} | base64 -w0)" \
-                  "https://ghcr.io/v2/${OWNER_REPO}/tags/list" | jq -r '.tags[]?' | sort -Vr)
+                  "https://ghcr.io/v2/${OWNER_REPO}/tags/list" | jq -r '.tags[]?' | grep -E '^[vV]?[0-9]+' | sort -Vr)
               else
                 # Docker Hub
                 IMAGE="${SOURCE#docker.io/}"
@@ -86,15 +87,26 @@ jobs:
               echo "Available source tags:"
               echo "$TAGS"
 
-              LOCAL_TAGS=$(gh api -H "Accept: application/vnd.github+json" \
-                "/users/${{ github.actor }}/packages/container/${TARGET##*/}/versions" 2>/dev/null \
-                | jq -r '.[].metadata.container.tags[0] // empty' | sort -Vr)
+              # Получаем локальные теги — безопасно
+              LOCAL_TAGS=""
+              if gh api -H "Accept: application/vnd.github+json" \
+                "/users/${{ github.actor }}/packages/container/${TARGET##*/}/versions" >/dev/null 2>&1; then
+                LOCAL_TAGS=$(gh api -H "Accept: application/vnd.github+json" \
+                  "/users/${{ github.actor }}/packages/container/${TARGET##*/}/versions" \
+                  | jq -r '.[].metadata.container.tags[]? // empty' | grep -v '^$' | sort -Vr)
+              fi
 
               echo "Existing local tags:"
-              echo "$LOCAL_TAGS"
+              if [ -z "$LOCAL_TAGS" ]; then
+                echo "(none)"
+              else
+                echo "$LOCAL_TAGS"
+              fi
 
+              # Берём первые N тегов
               NEW_TAGS=$(echo "$TAGS" | head -n "$KEEP")
 
+              # Пуллим и пушим новые
               while IFS= read -r TAG; do
                 if [ -z "$TAG" ]; then continue; fi
                 if echo "$LOCAL_TAGS" | grep -Fxq "$TAG"; then
@@ -107,9 +119,16 @@ jobs:
                 docker push "$TARGET:$TAG"
               done <<< "$NEW_TAGS"
 
-              ALL_LOCAL=$(gh api -H "Accept: application/vnd.github+json" \
-                "/users/${{ github.actor }}/packages/container/${TARGET##*/}/versions" 2>/dev/null \
-                | jq -r 'map(select(.metadata.container.tags[0])) | sort_by(.created_at) | reverse | .[].metadata.container.tags[0]')
+              # Удаляем старые — безопасно
+              ALL_LOCAL=""
+              if gh api -H "Accept: application/vnd.github+json" \
+                "/users/${{ github.actor }}/packages/container/${TARGET##*/}/versions" >/dev/null 2>&1; then
+                ALL_LOCAL=$(gh api -H "Accept: application/vnd.github+json" \
+                  "/users/${{ github.actor }}/packages/container/${TARGET##*/}/versions" \
+                  | jq -r 'map(select(.metadata.container.tags and (.metadata.container.tags | length > 0))) | sort_by(.created_at) | reverse | .[].metadata.container.tags[]?' \
+                  | grep -v '^$' | sort -Vr)
+              fi
+
               COUNT=$(echo "$ALL_LOCAL" | wc -l)
               if [ "$COUNT" -gt "$KEEP" ]; then
                 TO_DELETE=$(echo "$ALL_LOCAL" | tail -n +$((KEEP+1)))
@@ -117,14 +136,18 @@ jobs:
                   if [ -z "$TAG_DEL" ]; then continue; fi
                   ID=$(gh api -H "Accept: application/vnd.github+json" \
                     "/users/${{ github.actor }}/packages/container/${TARGET##*/}/versions" \
-                    | jq -r ".[] | select(.metadata.container.tags[0]==\"$TAG_DEL\") | .id")
-                  echo "Deleting old version: $TAG_DEL (ID: $ID)"
-                  gh api --method DELETE "/users/${{ github.actor }}/packages/container/${TARGET##*/}/versions/$ID"
+                    | jq -r ".[] | select(.metadata.container.tags and (.metadata.container.tags | index(\"$TAG_DEL\"))) | .id")
+                  if [ -n "$ID" ]; then
+                    echo "Deleting old version: $TAG_DEL (ID: $ID)"
+                    gh api --method DELETE "/users/${{ github.actor }}/packages/container/${TARGET##*/}/versions/$ID"
+                  fi
                 done <<< "$TO_DELETE"
               fi
 
+              # Обновляем latest
               LATEST=$(echo "$NEW_TAGS" | head -n1)
               if [ -n "$LATEST" ]; then
+                echo "Updating 'latest' tag to $LATEST"
                 docker pull "$SOURCE:$LATEST"
                 docker tag "$SOURCE:$LATEST" "$TARGET:latest"
                 docker push "$TARGET:latest"
@@ -140,6 +163,7 @@ jobs:
 
               mkdir -p "$TARGET_PATH"
 
+              # Получаем последний релиз
               RELEASE=$(curl -s "https://api.github.com/repos/$SOURCE_REPO/releases/latest")
               VERSION=$(echo "$RELEASE" | jq -r '.tag_name')
               ASSET_URL=$(echo "$RELEASE" | jq -r ".assets[] | select(.name | test(\"$ASSET_PATTERN\")) | .browser_download_url")
@@ -155,6 +179,7 @@ jobs:
               echo "Downloading $FILENAME from $ASSET_URL"
               curl -L -o "$DEST" "$ASSET_URL"
 
+              # Удаляем старые версии
               cd "$TARGET_PATH"
               FILES=$(ls -t | grep -E "^$(echo "$FILENAME" | sed 's/\..*$//')")
               COUNT=$(echo "$FILES" | wc -l)
@@ -166,6 +191,7 @@ jobs:
                 done
               fi
 
+              # Создаём symlink на latest
               LATEST_FILE="$(echo "$FILENAME" | sed 's/\..*$//')-latest$(echo "$FILENAME" | sed 's/.*\(\..*\)/\1/')"
               ln -sf "$FILENAME" "$LATEST_FILE"
 
