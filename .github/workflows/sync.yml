@@ -87,14 +87,29 @@ jobs:
             container)
               echo "Syncing container: $SOURCE → $TARGET"
 
-              # Detect source: GHCR or Docker Hub
-              if [[ "$SOURCE" == ghcr.io/* ]]; then
-                REPO="${SOURCE#ghcr.io/}"
-              elif [[ "$SOURCE" == docker.io/* ]]; then
-                REPO="${SOURCE#docker.io/}"
-                REPO="${REPO#library/}"
+              # Get stable versions from GitHub Releases if source_repo is provided, otherwise from Docker Hub
+              if [ -n "$SOURCE_REPO" ]; then
+                # Fetch tags from GitHub Releases
+                TAGS=$(curl -s "https://api.github.com/repos/${SOURCE_REPO}/releases" \
+                  | jq -r '.[] | select(.prerelease == false) | .tag_name' \
+                  | grep -E '^[vV]?[0-9]+(\.[0-9]+)*$' \
+                  | grep -v -E '[a-zA-Z]' \
+                  | sed 's/^v//' \
+                  | sort -Vr)
               else
-                REPO="$SOURCE"
+                # Use Docker Hub API
+                if [[ "$SOURCE" == ghcr.io/* ]]; then
+                  REPO="${SOURCE#ghcr.io/}"
+                elif [[ "$SOURCE" == docker.io/* ]]; then
+                  REPO="${SOURCE#docker.io/}"
+                  REPO="${REPO#library/}"
+                else
+                  REPO="$SOURCE"
+                fi
+                TAGS=$(curl -s "https://hub.docker.com/v2/repositories/${REPO}/tags/?page_size=100" \
+                  | jq -r '.results[].name' | \
+                  grep -E '^[vV]?[0-9]+(\.[0-9]+)*$' | \
+                  grep -v -E '[a-zA-Z]' | sort -Vr)
               fi
 
               TAGS=$(curl -s "https://hub.docker.com/v2/repositories/${REPO}/tags/?page_size=100" \
