@@ -97,7 +97,6 @@ jobs:
                   | sed 's/^v//' \
                   | sort -Vr)
               else
-                # Use Docker Hub API
                 if [[ "$SOURCE" == ghcr.io/* ]]; then
                   REPO="${SOURCE#ghcr.io/}"
                 elif [[ "$SOURCE" == docker.io/* ]]; then
@@ -107,15 +106,11 @@ jobs:
                   REPO="$SOURCE"
                 fi
                 TAGS=$(curl -s "https://hub.docker.com/v2/repositories/${REPO}/tags/?page_size=100" \
-                  | jq -r '.results[].name' | \
-                  grep -E '^[vV]?[0-9]+(\.[0-9]+)*$' | \
-                  grep -v -E '[a-zA-Z]' | sort -Vr)
+                  | jq -r '.results[].name' \
+                  | grep -E '^[vV]?[0-9]+(\.[0-9]+)*$' \
+                  | grep -v -E '[a-zA-Z]' \
+                  | sort -Vr)
               fi
-
-              TAGS=$(curl -s "https://hub.docker.com/v2/repositories/${REPO}/tags/?page_size=100" \
-                | jq -r '.results[].name' | \
-                grep -E '^[vV]?[0-9]+(\.[0-9]+)*$' | \
-                grep -v -E '[a-zA-Z]' | sort -Vr)
 
               if [ -z "$TAGS" ]; then
                 echo "No tags found in source"
