@@ -89,14 +89,13 @@ jobs:
 
               # Get stable versions from GitHub Releases if source_repo is provided, otherwise from Docker Hub
               if [ -n "$SOURCE_REPO" ]; then
-                # Fetch tags from GitHub Releases
+                # Fetch from GitHub Releases
                 TAGS=$(curl -s "https://api.github.com/repos/${SOURCE_REPO}/releases" \
                   | jq -r '.[] | select(.prerelease == false) | .tag_name' \
-                  | grep -E '^[vV]?[0-9]+(\.[0-9]+)*$' \
-                  | sed 's/^[vV]//' \
-                  | grep -E '^[0-9]+(\.[0-9]+)*$' \
+                  | grep -E '^v?[0-9]+(\.[0-9]+)*$' \
                   | sort -Vr)
               else
+                # Docker Hub or fallback
                 if [[ "$SOURCE" == ghcr.io/* ]]; then
                   REPO="${SOURCE#ghcr.io/}"
                 elif [[ "$SOURCE" == docker.io/* ]]; then
