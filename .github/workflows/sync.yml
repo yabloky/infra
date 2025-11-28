@@ -194,7 +194,7 @@ jobs:
 
               RELEASE=$(curl -s "https://api.github.com/repos/${SOURCE_REPO}/releases/latest")
               VERSION=$(echo "$RELEASE" | jq -r '.tag_name')
-              ASSET_URL=$(echo "$RELEASE" | jq -r ".assets[] | select(.name | test(\"$ASSET_PATTERN\")) | .browser_download_url")
+              ASSET_URL=$(echo "$RELEASE" | jq -r --arg pat "$ASSET_PATTERN" '.assets[] | select(.name | endswith($pat)) | .browser_download_url')
 
               if [ -z "$ASSET_URL" ]; then
                 echo "Asset matching pattern '$ASSET_PATTERN' not found"
