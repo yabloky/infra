@@ -1,4 +1,4 @@
-name: 3proxy-tarampampam
+name: 3proxy
 type: container
 source: ghcr.io/tarampampam/3proxy
 target: ghcr.io/yabloky/3proxy
