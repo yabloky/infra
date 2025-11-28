@@ -1,0 +1,181 @@
+name: Mirror Container Images & Binaries
+
+on:
+  workflow_dispatch:
+    inputs:
+      component:
+        description: 'Component name (e.g. komodo)'
+        required: true
+        type: string
+
+env:
+  TARGET_NS: ghcr.io/${{ github.repository_owner }}
+
+jobs:
+  mirror:
+    runs-on: ubuntu-latest
+    permissions:
+      packages: write
+      contents: read
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install jq and yq
+        run: |
+          sudo apt-get update -y
+          sudo apt-get install -y jq
+          wget https://github.com/mikefarah/yq/releases/latest/download/yq_linux_amd64 -O /usr/local/bin/yq
+          chmod +x /usr/local/bin/yq
+
+      - name: Login to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Load manifest
+        id: manifest
+        run: |
+          MANIFEST="${{ github.event.inputs.component }}/manifest.yaml"
+          if [ ! -f "$MANIFEST" ]; then
+            echo "Manifest not found: $MANIFEST"
+            exit 1
+          fi
+          echo "type=$(yq '.type' "$MANIFEST")" >> $GITHUB_OUTPUT
+          echo "source=$(yq '.source' "$MANIFEST")" >> $GITHUB_OUTPUT
+          echo "target=$(yq '.target // .source | sub(\"^[^/]+/\"; \"${{ env.TARGET_NS }}/\"; \"g\")')" >> $GITHUB_OUTPUT
+          echo "keep=$(yq '.keep_versions // 2' "$MANIFEST")" >> $GITHUB_OUTPUT
+          echo "source_repo=$(yq '.source_repo // ""' "$MANIFEST")" >> $GITHUB_OUTPUT
+          echo "asset_pattern=$(yq '.asset_pattern // ""' "$MANIFEST")" >> $GITHUB_OUTPUT
+          echo "target_path=$(yq '.target_path // "binaries/"' "$MANIFEST")" >> $GITHUB_OUTPUT
+
+      - name: Sync by type
+        run: |
+          TYPE="${{ steps.manifest.outputs.type }}"
+          SOURCE="${{ steps.manifest.outputs.source }}"
+          TARGET="${{ steps.manifest.outputs.target }}"
+          KEEP="${{ steps.manifest.outputs.keep }}"
+          SOURCE_REPO="${{ steps.manifest.outputs.source_repo }}"
+          ASSET_PATTERN="${{ steps.manifest.outputs.asset_pattern }}"
+          TARGET_PATH="${{ steps.manifest.outputs.target_path }}"
+
+          case "$TYPE" in
+            container)
+              echo "Syncing container: $SOURCE → $TARGET"
+              # GHCR
+              if [[ "$SOURCE" == ghcr.io/* ]]; then
+                OWNER_REPO="${SOURCE#ghcr.io/}"
+                TAGS=$(curl -s -H "Authorization: Bearer $(echo ${{ secrets.GITHUB_TOKEN }} | base64 -w0)" \
+                  "https://ghcr.io/v2/${OWNER_REPO}/tags/list" | jq -r '.tags[]?' | sort -Vr)
+              else
+                # Docker Hub
+                IMAGE="${SOURCE#docker.io/}"
+                IMAGE="${IMAGE#library/}"
+                REPO="${IMAGE%%:*}"
+                TAGS=$(curl -s "https://hub.docker.com/v2/repositories/${REPO}/tags/?page_size=100" \
+                  | jq -r '.results[].name' | grep -E '^[0-9]+\.[0-9]+.*$' | sort -Vr)
+              fi
+
+              if [ -z "$TAGS" ]; then
+                echo "No tags found in source"
+                exit 1
+              fi
+
+              echo "Available source tags:"
+              echo "$TAGS"
+
+              LOCAL_TAGS=$(gh api -H "Accept: application/vnd.github+json" \
+                "/users/${{ github.actor }}/packages/container/${TARGET##*/}/versions" 2>/dev/null \
+                | jq -r '.[].metadata.container.tags[0] // empty' | sort -Vr)
+
+              echo "Existing local tags:"
+              echo "$LOCAL_TAGS"
+
+              NEW_TAGS=$(echo "$TAGS" | head -n "$KEEP")
+
+              while IFS= read -r TAG; do
+                if [ -z "$TAG" ]; then continue; fi
+                if echo "$LOCAL_TAGS" | grep -Fxq "$TAG"; then
+                  echo "Already have $TAG — skip"
+                  continue
+                fi
+                echo "Pulling $SOURCE:$TAG"
+                docker pull "$SOURCE:$TAG"
+                docker tag "$SOURCE:$TAG" "$TARGET:$TAG"
+                docker push "$TARGET:$TAG"
+              done <<< "$NEW_TAGS"
+
+              ALL_LOCAL=$(gh api -H "Accept: application/vnd.github+json" \
+                "/users/${{ github.actor }}/packages/container/${TARGET##*/}/versions" 2>/dev/null \
+                | jq -r 'map(select(.metadata.container.tags[0])) | sort_by(.created_at) | reverse | .[].metadata.container.tags[0]')
+              COUNT=$(echo "$ALL_LOCAL" | wc -l)
+              if [ "$COUNT" -gt "$KEEP" ]; then
+                TO_DELETE=$(echo "$ALL_LOCAL" | tail -n +$((KEEP+1)))
+                while IFS= read -r TAG_DEL; do
+                  if [ -z "$TAG_DEL" ]; then continue; fi
+                  ID=$(gh api -H "Accept: application/vnd.github+json" \
+                    "/users/${{ github.actor }}/packages/container/${TARGET##*/}/versions" \
+                    | jq -r ".[] | select(.metadata.container.tags[0]==\"$TAG_DEL\") | .id")
+                  echo "Deleting old version: $TAG_DEL (ID: $ID)"
+                  gh api --method DELETE "/users/${{ github.actor }}/packages/container/${TARGET##*/}/versions/$ID"
+                done <<< "$TO_DELETE"
+              fi
+
+              LATEST=$(echo "$NEW_TAGS" | head -n1)
+              if [ -n "$LATEST" ]; then
+                docker pull "$SOURCE:$LATEST"
+                docker tag "$SOURCE:$LATEST" "$TARGET:latest"
+                docker push "$TARGET:latest"
+              fi
+              ;;
+
+            release-binary)
+              echo "Syncing binary from GitHub Releases: $SOURCE_REPO"
+              if [ -z "$SOURCE_REPO" ] || [ -z "$ASSET_PATTERN" ]; then
+                echo "Missing source_repo or asset_pattern"
+                exit 1
+              fi
+
+              mkdir -p "$TARGET_PATH"
+
+              RELEASE=$(curl -s "https://api.github.com/repos/$SOURCE_REPO/releases/latest")
+              VERSION=$(echo "$RELEASE" | jq -r '.tag_name')
+              ASSET_URL=$(echo "$RELEASE" | jq -r ".assets[] | select(.name | test(\"$ASSET_PATTERN\")) | .browser_download_url")
+
+              if [ -z "$ASSET_URL" ]; then
+                echo "Asset matching pattern '$ASSET_PATTERN' not found"
+                exit 1
+              fi
+
+              FILENAME=$(basename "$ASSET_URL")
+              DEST="$TARGET_PATH/$FILENAME"
+
+              echo "Downloading $FILENAME from $ASSET_URL"
+              curl -L -o "$DEST" "$ASSET_URL"
+
+              cd "$TARGET_PATH"
+              FILES=$(ls -t | grep -E "^$(echo "$FILENAME" | sed 's/\..*$//')")
+              COUNT=$(echo "$FILES" | wc -l)
+              if [ "$COUNT" -gt "$KEEP" ]; then
+                TO_DELETE=$(echo "$FILES" | tail -n +$((KEEP+1)))
+                for F in $TO_DELETE; do
+                  echo "Deleting old binary: $F"
+                  rm -f "$F"
+                done
+              fi
+
+              LATEST_FILE="$(echo "$FILENAME" | sed 's/\..*$//')-latest$(echo "$FILENAME" | sed 's/.*\(\..*\)/\1/')"
+              ln -sf "$FILENAME" "$LATEST_FILE"
+
+              echo "Done. Binary saved as $DEST"
+              ;;
+
+            *)
+              echo "Unknown type: $TYPE"
+              exit 1
+              ;;
+          esac
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
