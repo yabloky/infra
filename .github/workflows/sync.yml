@@ -87,15 +87,12 @@ jobs:
             container)
               echo "Syncing container: $SOURCE → $TARGET"
 
-              # Get stable versions from GitHub Releases if source_repo is provided, otherwise from Docker Hub
               if [ -n "$SOURCE_REPO" ]; then
-                # Fetch from GitHub Releases
                 TAGS=$(curl -s "https://api.github.com/repos/${SOURCE_REPO}/releases" \
                   | jq -r '.[] | select(.prerelease == false) | .tag_name' \
                   | grep -E '^v?[0-9]+(\.[0-9]+)*$' \
                   | sort -Vr)
               else
-                # Docker Hub or fallback
                 if [[ "$SOURCE" == ghcr.io/* ]]; then
                   REPO="${SOURCE#ghcr.io/}"
                 elif [[ "$SOURCE" == docker.io/* ]]; then
@@ -118,7 +115,6 @@ jobs:
               echo "Available source tags:"
               echo "$TAGS"
 
-              # Get local tags — safely
               LOCAL_TAGS=""
               if gh api -H "Accept: application/vnd.github+json" \
                 "/users/${{ github.actor }}/packages/container/${TARGET##*/}/versions" >/dev/null 2>&1; then
@@ -134,10 +130,8 @@ jobs:
                 echo "$LOCAL_TAGS"
               fi
 
-              # Take first N tags
               NEW_TAGS=$(echo "$TAGS" | head -n "$KEEP")
 
-              # Pull and push new ones
               while IFS= read -r TAG; do
                 if [ -z "$TAG" ]; then continue; fi
                 if echo "$LOCAL_TAGS" | grep -Fxq "$TAG"; then
@@ -145,12 +139,14 @@ jobs:
                   continue
                 fi
                 echo "Pulling $SOURCE:$TAG"
-                docker pull "$SOURCE:$TAG"
-                docker tag "$SOURCE:$TAG" "$TARGET:$TAG"
-                docker push "$TARGET:$TAG"
+                if docker pull "$SOURCE:$TAG"; then
+                  docker tag "$SOURCE:$TAG" "$TARGET:$TAG"
+                  docker push "$TARGET:$TAG"
+                else
+                  echo "Failed to pull $SOURCE:$TAG — skipping"
+                fi
               done <<< "$NEW_TAGS"
 
-              # Delete old versions — safely
               ALL_LOCAL=""
               if gh api -H "Accept: application/vnd.github+json" \
                 "/users/${{ github.actor }}/packages/container/${TARGET##*/}/versions" >/dev/null 2>&1; then
@@ -175,13 +171,15 @@ jobs:
                 done <<< "$TO_DELETE"
               fi
 
-              # Update latest tag
-              LATEST=$(echo "$NEW_TAGS" | head -n1)
+              LATEST=$(echo "$TAGS" | head -n1)
               if [ -n "$LATEST" ]; then
                 echo "Updating 'latest' tag to $LATEST"
-                docker pull "$SOURCE:$LATEST"
-                docker tag "$SOURCE:$LATEST" "$TARGET:latest"
-                docker push "$TARGET:latest"
+                if docker pull "$SOURCE:$LATEST"; then
+                  docker tag "$SOURCE:$LATEST" "$TARGET:latest"
+                  docker push "$TARGET:latest"
+                else
+                  echo "Failed to pull latest tag"
+                fi
               fi
               ;;
 
@@ -194,8 +192,7 @@ jobs:
 
               mkdir -p "$TARGET_PATH"
 
-              # Fetch latest release
-              RELEASE=$(curl -s "https://api.github.com/repos/$SOURCE_REPO/releases/latest")
+              RELEASE=$(curl -s "https://api.github.com/repos/${SOURCE_REPO}/releases/latest")
               VERSION=$(echo "$RELEASE" | jq -r '.tag_name')
               ASSET_URL=$(echo "$RELEASE" | jq -r ".assets[] | select(.name | test(\"$ASSET_PATTERN\")) | .browser_download_url")
 
@@ -210,7 +207,6 @@ jobs:
               echo "Downloading $FILENAME from $ASSET_URL"
               curl -L -o "$DEST" "$ASSET_URL"
 
-              # Clean old versions
               cd "$TARGET_PATH"
               FILES=$(ls -t | grep -E "^$(echo "$FILENAME" | sed 's/\..*$//')")
               COUNT=$(echo "$FILES" | wc -l)
@@ -222,7 +218,6 @@ jobs:
                 done
               fi
 
-              # Create latest symlink
               LATEST_FILE="$(echo "$FILENAME" | sed 's/\..*$//')-latest$(echo "$FILENAME" | sed 's/.*\(\..*\)/\1/')"
               ln -sf "$FILENAME" "$LATEST_FILE"
 
