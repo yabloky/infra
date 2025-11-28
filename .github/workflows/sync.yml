@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
     inputs:
       component:
-        description: 'Component name (e.g. komodo)'
+        description: 'Component name (e.g. nezha/nezha-agent)'
         required: true
         type: string
 
@@ -16,7 +16,7 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       packages: write
-      contents: read
+      contents: write  # ← добавлено: чтобы можно было пушить
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -49,14 +49,12 @@ jobs:
           KEEP=$(yq '.keep_versions // 2' "$MANIFEST")
           SOURCE_REPO=$(yq '.source_repo // ""' "$MANIFEST")
           ASSET_PATTERN=$(yq '.asset_pattern // ""' "$MANIFEST")
-          TARGET_PATH=$(yq '.target_path // "binaries/"' "$MANIFEST")
+          TARGET_PATH=$(yq '.target_path // "."' "$MANIFEST")
 
-          # Handle target: if not set, build from source
           TARGET_OVERRIDE=$(yq '.target // ""' "$MANIFEST")
           if [ -n "$TARGET_OVERRIDE" ]; then
             TARGET="$TARGET_OVERRIDE"
           else
-            # Strip original registry, keep image name
             if [[ "$SOURCE" == */* ]]; then
               IMAGE_NAME="${SOURCE#*/}"
             else
@@ -82,6 +80,8 @@ jobs:
           SOURCE_REPO="${{ steps.manifest.outputs.source_repo }}"
           ASSET_PATTERN="${{ steps.manifest.outputs.asset_pattern }}"
           TARGET_PATH="${{ steps.manifest.outputs.target_path }}"
+
+          mkdir -p "$TARGET_PATH"
 
           case "$TYPE" in
             container)
@@ -177,8 +177,6 @@ jobs:
                 if docker pull "$SOURCE:$LATEST"; then
                   docker tag "$SOURCE:$LATEST" "$TARGET:latest"
                   docker push "$TARGET:latest"
-                else
-                  echo "Failed to pull latest tag"
                 fi
               fi
               ;;
@@ -194,6 +192,7 @@ jobs:
 
               RELEASE=$(curl -s "https://api.github.com/repos/${SOURCE_REPO}/releases/latest")
               VERSION=$(echo "$RELEASE" | jq -r '.tag_name')
+              # ИСПРАВЛЕНО: используем endswith, а не test()
               ASSET_URL=$(echo "$RELEASE" | jq -r --arg pat "$ASSET_PATTERN" '.assets[] | select(.name | endswith($pat)) | .browser_download_url')
 
               if [ -z "$ASSET_URL" ]; then
@@ -208,7 +207,8 @@ jobs:
               curl -L -o "$DEST" "$ASSET_URL"
 
               cd "$TARGET_PATH"
-              FILES=$(ls -t | grep -E "^$(echo "$FILENAME" | sed 's/\..*$//')")
+              BASENAME=$(echo "$FILENAME" | sed 's/\.[^.]*$//')
+              FILES=$(ls -t | grep -E "^${BASENAME}.*\.zip$")
               COUNT=$(echo "$FILES" | wc -l)
               if [ "$COUNT" -gt "$KEEP" ]; then
                 TO_DELETE=$(echo "$FILES" | tail -n +$((KEEP+1)))
@@ -218,7 +218,7 @@ jobs:
                 done
               fi
 
-              LATEST_FILE="$(echo "$FILENAME" | sed 's/\..*$//')-latest$(echo "$FILENAME" | sed 's/.*\(\..*\)/\1/')"
+              LATEST_FILE="${BASENAME}-latest.zip"
               ln -sf "$FILENAME" "$LATEST_FILE"
 
               echo "Done. Binary saved as $DEST"
@@ -231,3 +231,15 @@ jobs:
           esac
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Commit and push binaries
+        run: |
+          git config --global user.name "github-actions"
+          git config --global user.email "github-actions@github.com"
+          git add .
+          if git diff --staged --quiet; then
+            echo "No changes to commit"
+          else
+            git commit -m "chore: update ${{ github.event.inputs.component }} binaries"
+            git push
+          fi
