@@ -1,0 +1,5 @@
+name: 3proxy-tarampampam
+type: container
+source: ghcr.io/tarampampam/3proxy
+target: ghcr.io/yabloky/3proxy
+keep_versions: 2
