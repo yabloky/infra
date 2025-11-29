@@ -287,6 +287,33 @@ jobs:
                 fi
               fi
 
+              # Create or update component-specific 'latest' release
+              if [ -n "$NEW_RELEASES" ]; then
+                LATEST_VERSION=$(echo "$NEW_RELEASES" | head -n1)
+                LATEST_TAG="${PREFIX}latest"
+
+                LATEST_ASSET_URL=$(curl -s "https://api.github.com/repos/${SOURCE_REPO}/releases/tags/${LATEST_VERSION}" | jq -r --arg pat "$ASSET_PATTERN" '.assets[] | select(.name | endswith($pat)) | .browser_download_url')
+                if [ -n "$LATEST_ASSET_URL" ]; then
+                  LATEST_FILENAME=$(basename "$LATEST_ASSET_URL")
+                  TMP_LATEST="/tmp/${LATEST_FILENAME}"
+                  curl -L -o "$TMP_LATEST" "$LATEST_ASSET_URL"
+
+                  if gh release view "$LATEST_TAG" --repo "$REPO_FULL" >/dev/null 2>&1; then
+                    gh release delete "$LATEST_TAG" --repo "$REPO_FULL" --yes
+                  fi
+
+                  gh release create "$LATEST_TAG" "$TMP_LATEST" \
+                    --repo "$REPO_FULL" \
+                    --title "$LATEST_TAG" \
+                    --notes "Auto-mirrored latest version of ${PREFIX%?} from https://github.com/${SOURCE_REPO}"
+
+                  rm -f "$TMP_LATEST"
+                  echo "Created/updated latest release: $LATEST_TAG"
+                else
+                  echo "Warning: asset for latest version $LATEST_VERSION not found"
+                fi
+              fi
+
               echo "Done. Binary releases synchronized."
               ;;
 
