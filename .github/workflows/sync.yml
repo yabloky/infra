@@ -16,7 +16,7 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       packages: write
-      contents: write  # ← добавлено: чтобы можно было пушить
+      contents: write  # Required to push GitHub Releases
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -50,6 +50,7 @@ jobs:
           SOURCE_REPO=$(yq '.source_repo // ""' "$MANIFEST")
           ASSET_PATTERN=$(yq '.asset_pattern // ""' "$MANIFEST")
           TARGET_PATH=$(yq '.target_path // "."' "$MANIFEST")
+          TAG_PREFIX=$(yq '.tag_prefix // ""' "$MANIFEST")
 
           TARGET_OVERRIDE=$(yq '.target // ""' "$MANIFEST")
           if [ -n "$TARGET_OVERRIDE" ]; then
@@ -70,6 +71,7 @@ jobs:
           echo "source_repo=$SOURCE_REPO" >> $GITHUB_OUTPUT
           echo "asset_pattern=$ASSET_PATTERN" >> $GITHUB_OUTPUT
           echo "target_path=$TARGET_PATH" >> $GITHUB_OUTPUT
+          echo "tag_prefix=$TAG_PREFIX" >> $GITHUB_OUTPUT
 
       - name: Sync by type
         run: |
@@ -80,6 +82,7 @@ jobs:
           SOURCE_REPO="${{ steps.manifest.outputs.source_repo }}"
           ASSET_PATTERN="${{ steps.manifest.outputs.asset_pattern }}"
           TARGET_PATH="${{ steps.manifest.outputs.target_path }}"
+          TAG_PREFIX="${{ steps.manifest.outputs.tag_prefix }}"
 
           mkdir -p "$TARGET_PATH"
 
@@ -188,48 +191,103 @@ jobs:
                 exit 1
               fi
 
-              # Fetch latest release from upstream
-              RELEASE=$(curl -s "https://api.github.com/repos/${SOURCE_REPO}/releases/latest")
-              VERSION=$(echo "$RELEASE" | jq -r '.tag_name')
-              ASSET_URL=$(echo "$RELEASE" | jq -r --arg pat "$ASSET_PATTERN" '.assets[] | select(.name | endswith($pat)) | .browser_download_url')
+              # Fetch ALL stable releases (not just 'latest')
+              ALL_RELEASES=$(curl -s "https://api.github.com/repos/${SOURCE_REPO}/releases" | jq -r --arg pat "$ASSET_PATTERN" '
+                .[] |
+                select(.prerelease == false) |
+                select(.assets | map(select(.name | endswith($pat))) | length > 0) |
+                .tag_name
+              ' | sort -Vr)
 
-              if [ -z "$ASSET_URL" ]; then
-                echo "Asset matching pattern '$ASSET_PATTERN' not found"
+              if [ -z "$ALL_RELEASES" ]; then
+                echo "No matching stable releases found for pattern '$ASSET_PATTERN'"
                 exit 1
               fi
 
-              FILENAME=$(basename "$ASSET_URL")
-              curl -L -o "/tmp/$FILENAME" "$ASSET_URL"
+              echo "Found upstream releases:"
+              echo "$ALL_RELEASES"
 
-              # Publish to YOUR GitHub Releases
+              # Keep only the required number of versions
+              NEW_RELEASES=$(echo "$ALL_RELEASES" | head -n "$KEEP")
+
               REPO_FULL="${{ github.repository }}"
-              KEEP="${{ steps.manifest.outputs.keep }}"
+              PREFIX="$TAG_PREFIX"
 
-              # List existing releases (tags) in your repo, sorted by version (newest first)
-              EXISTING_TAGS=$(gh api "repos/$REPO_FULL/releases" --jq 'sort_by(.created_at) | reverse | .[].tag_name' 2>/dev/null)
-              COUNT=$(echo "$EXISTING_TAGS" | wc -l)
-
-              # Delete oldest if over limit
-              if [ -n "$EXISTING_TAGS" ] && [ "$COUNT" -gt "$KEEP" ]; then
-                TO_DELETE=$(echo "$EXISTING_TAGS" | tail -n +$((KEEP+1)))
-                for TAG in $TO_DELETE; do
-                  echo "Deleting old release: $TAG"
-                  gh release delete "$TAG" --repo "$REPO_FULL" --yes
-                done
-              fi
-
-              # Create new release if not exists
-              if gh release view "$VERSION" --repo "$REPO_FULL" >/dev/null 2>&1; then
-                echo "Release $VERSION already exists in your repo — skipping"
+              # Get ALL existing releases in YOUR repo, filtered by prefix
+              ALL_LOCAL_TAGS=$(gh api "repos/$REPO_FULL/releases" --jq 'sort_by(.created_at) | reverse | .[].tag_name' 2>/dev/null)
+              if [ -n "$PREFIX" ]; then
+                LOCAL_TAGS=$(echo "$ALL_LOCAL_TAGS" | grep "^$PREFIX" || true)
               else
-                echo "Creating release $VERSION in your repo"
-                gh release create "$VERSION" "/tmp/$FILENAME" \
-                  --repo "$REPO_FULL" \
-                  --title "$VERSION" \
-                  --notes "Mirrored from https://github.com/${SOURCE_REPO}/releases/tag/${VERSION}"
+                LOCAL_TAGS="$ALL_LOCAL_TAGS"
               fi
 
-              echo "Done. Binary published to your GitHub Releases"
+              echo "Existing local releases (with prefix '$PREFIX'):"
+              if [ -z "$LOCAL_TAGS" ]; then
+                echo "(none)"
+              else
+                echo "$LOCAL_TAGS"
+              fi
+
+              # Download and publish each required version
+              while IFS= read -r VERSION; do
+                if [ -z "$VERSION" ]; then continue; fi
+
+                # Build local release tag with prefix
+                if [ -n "$PREFIX" ]; then
+                  LOCAL_TAG="${PREFIX}${VERSION}"
+                else
+                  LOCAL_TAG="$VERSION"
+                fi
+
+                # Skip if already exists
+                if echo "$LOCAL_TAGS" | grep -Fxq "$LOCAL_TAG"; then
+                  echo "Release $LOCAL_TAG already exists — skip"
+                  continue
+                fi
+
+                # Get asset URL for this version
+                ASSET_URL=$(curl -s "https://api.github.com/repos/${SOURCE_REPO}/releases/tags/${VERSION}" | jq -r --arg pat "$ASSET_PATTERN" '.assets[] | select(.name | endswith($pat)) | .browser_download_url')
+                if [ -z "$ASSET_URL" ]; then
+                  echo "Asset for $VERSION not found — skip"
+                  continue
+                fi
+
+                FILENAME=$(basename "$ASSET_URL")
+                TMP_FILE="/tmp/$FILENAME"
+                curl -L -o "$TMP_FILE" "$ASSET_URL"
+
+                echo "Creating release: $LOCAL_TAG"
+                gh release create "$LOCAL_TAG" "$TMP_FILE" \
+                  --repo "$REPO_FULL" \
+                  --title "$LOCAL_TAG" \
+                  --notes "Mirrored from https://github.com/${SOURCE_REPO}/releases/tag/${VERSION}"
+
+                rm -f "$TMP_FILE"
+              done <<< "$NEW_RELEASES"
+
+              # Delete old releases if count exceeds keep_versions
+              if [ -n "$LOCAL_TAGS" ]; then
+                CURRENT_COUNT=$(echo "$LOCAL_TAGS" | wc -l)
+                if [ "$CURRENT_COUNT" -gt "$KEEP" ]; then
+                  # Refresh list after potential new releases
+                  ALL_LOCAL_TAGS=$(gh api "repos/$REPO_FULL/releases" --jq 'sort_by(.created_at) | reverse | .[].tag_name' 2>/dev/null)
+                  if [ -n "$PREFIX" ]; then
+                    LOCAL_TAGS=$(echo "$ALL_LOCAL_TAGS" | grep "^$PREFIX" | head -n "$CURRENT_COUNT")
+                  else
+                    LOCAL_TAGS=$(echo "$ALL_LOCAL_TAGS" | head -n "$CURRENT_COUNT")
+                  fi
+
+                  TO_DELETE=$(echo "$LOCAL_TAGS" | tail -n +$((KEEP+1)))
+                  while IFS= read -r OLD_TAG; do
+                    if [ -n "$OLD_TAG" ]; then
+                      echo "Deleting old release: $OLD_TAG"
+                      gh release delete "$OLD_TAG" --repo "$REPO_FULL" --yes
+                    fi
+                  done <<< "$TO_DELETE"
+                fi
+              fi
+
+              echo "Done. Binary releases synchronized."
               ;;
 
             *)
