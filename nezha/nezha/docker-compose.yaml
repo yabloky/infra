@@ -10,6 +10,6 @@ services:
       - NZ_GRPC_PORT=5555
     ports:
       - "127.0.0.1:8008:8008"     # dashboard
-      - "5555:5555/udp" # gRPC for agent
+      - "127.0.0.1:5555:5555/udp" # gRPC for agent
     volumes:
       - /opt/nezha/data:/data
