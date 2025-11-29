@@ -1,6 +1,6 @@
 # infra
 
-This repository mirrors critical open-source dependencies (Docker images and binary releases) to ensure infrastructure resilience and independence from upstream authors.
+This repository mirrors critical open-source dependencies (Docker images and binary releases) to ensure infrastructure resilience.
 
 ## How it works
 
@@ -20,8 +20,6 @@ source_repo: nezhahq/nezha
 keep_versions: 2
 target: ghcr.io/yabloky/nezha # Optional override
 
-*Use image: ghcr.io/yabloky/netclient:latest
-
 ### For Binary Releases (`release-binary` type)
 
 type: release-binary
@@ -29,5 +27,3 @@ source_repo: nezhahq/agent
 asset_pattern: nezha-agent_linux_amd64.zip
 keep_versions: 2
 tag_prefix: nezha-agent-
-
-*Use curl -L https://github.com/yabloky/infra/releases/download/nezha-agent-latest/nezha-agent_linux_amd64.zip -o agent.zip in your deployment scripts.
