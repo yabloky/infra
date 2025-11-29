@@ -188,11 +188,9 @@ jobs:
                 exit 1
               fi
 
-              mkdir -p "$TARGET_PATH"
-
+              # Fetch latest release from upstream
               RELEASE=$(curl -s "https://api.github.com/repos/${SOURCE_REPO}/releases/latest")
               VERSION=$(echo "$RELEASE" | jq -r '.tag_name')
-              # ИСПРАВЛЕНО: используем endswith, а не test()
               ASSET_URL=$(echo "$RELEASE" | jq -r --arg pat "$ASSET_PATTERN" '.assets[] | select(.name | endswith($pat)) | .browser_download_url')
 
               if [ -z "$ASSET_URL" ]; then
@@ -201,27 +199,37 @@ jobs:
               fi
 
               FILENAME=$(basename "$ASSET_URL")
-              DEST="$TARGET_PATH/$FILENAME"
+              curl -L -o "/tmp/$FILENAME" "$ASSET_URL"
 
-              echo "Downloading $FILENAME from $ASSET_URL"
-              curl -L -o "$DEST" "$ASSET_URL"
+              # Publish to YOUR GitHub Releases
+              REPO_FULL="${{ github.repository }}"
+              KEEP="${{ steps.manifest.outputs.keep }}"
 
-              cd "$TARGET_PATH"
-              BASENAME=$(echo "$FILENAME" | sed 's/\.[^.]*$//')
-              FILES=$(ls -t | grep -E "^${BASENAME}.*\.zip$")
-              COUNT=$(echo "$FILES" | wc -l)
-              if [ "$COUNT" -gt "$KEEP" ]; then
-                TO_DELETE=$(echo "$FILES" | tail -n +$((KEEP+1)))
-                for F in $TO_DELETE; do
-                  echo "Deleting old binary: $F"
-                  rm -f "$F"
+              # List existing releases (tags) in your repo, sorted by version (newest first)
+              EXISTING_TAGS=$(gh api "repos/$REPO_FULL/releases" --jq 'sort_by(.created_at) | reverse | .[].tag_name' 2>/dev/null)
+              COUNT=$(echo "$EXISTING_TAGS" | wc -l)
+
+              # Delete oldest if over limit
+              if [ -n "$EXISTING_TAGS" ] && [ "$COUNT" -gt "$KEEP" ]; then
+                TO_DELETE=$(echo "$EXISTING_TAGS" | tail -n +$((KEEP+1)))
+                for TAG in $TO_DELETE; do
+                  echo "Deleting old release: $TAG"
+                  gh release delete "$TAG" --repo "$REPO_FULL" --yes
                 done
               fi
 
-              LATEST_FILE="${BASENAME}-latest.zip"
-              ln -sf "$FILENAME" "$LATEST_FILE"
+              # Create new release if not exists
+              if gh release view "$VERSION" --repo "$REPO_FULL" >/dev/null 2>&1; then
+                echo "Release $VERSION already exists in your repo — skipping"
+              else
+                echo "Creating release $VERSION in your repo"
+                gh release create "$VERSION" "/tmp/$FILENAME" \
+                  --repo "$REPO_FULL" \
+                  --title "$VERSION" \
+                  --notes "Mirrored from https://github.com/${SOURCE_REPO}/releases/tag/${VERSION}"
+              fi
 
-              echo "Done. Binary saved as $DEST"
+              echo "Done. Binary published to your GitHub Releases"
               ;;
 
             *)
@@ -231,15 +239,3 @@ jobs:
           esac
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: Commit and push binaries
-        run: |
-          git config --global user.name "github-actions"
-          git config --global user.email "github-actions@github.com"
-          git add .
-          if git diff --staged --quiet; then
-            echo "No changes to commit"
-          else
-            git commit -m "chore: update ${{ github.event.inputs.component }} binaries"
-            git push
-          fi
