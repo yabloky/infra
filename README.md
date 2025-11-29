@@ -1,4 +1,4 @@
-# infa
+# infra
 
 This repository mirrors critical open-source dependencies (Docker images and binary releases) to ensure infrastructure resilience and independence from upstream authors.
 
@@ -30,4 +30,4 @@ asset_pattern: nezha-agent_linux_amd64.zip
 keep_versions: 2
 tag_prefix: nezha-agent-
 
-*Use curl -L https://github.com/yabloky/infa/releases/download/nezha-agent-latest/nezha-agent_linux_amd64.zip -o agent.zip in your deployment scripts.
+*Use curl -L https://github.com/yabloky/infra/releases/download/nezha-agent-latest/nezha-agent_linux_amd64.zip -o agent.zip in your deployment scripts.
