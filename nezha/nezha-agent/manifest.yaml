@@ -1,5 +1,4 @@
 type: release-binary
 source_repo: nezhahq/agent
 asset_pattern: nezha-agent_linux_amd64.zip
-target_path: nezha/nezha-agent
 keep_versions: 2
