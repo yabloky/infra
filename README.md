@@ -30,4 +30,4 @@ asset_pattern: nezha-agent_linux_amd64.zip
 keep_versions: 2
 tag_prefix: nezha-agent-
 
-*Use curl -L https://github.com/yabloky/infa/releases/latest/download/nezha-agent-linux_amd64.zip -o agent.zip in your deployment scripts.
+*Use curl -L https://github.com/yabloky/infa/releases/download/nezha-agent-latest/nezha-agent_linux_amd64.zip -o agent.zip in your deployment scripts.
