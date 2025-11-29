@@ -58,7 +58,7 @@ install() {
     env_check
 
     ASSET="nezha-agent_${os}_${os_arch}.zip"
-    URL="https://github.com/yabloky/infa/releases/download/nezha-agent-latest/${ASSET}"
+    URL="https://github.com/yabloky/infra/releases/download/nezha-agent-latest/${ASSET}"
 
     info "Downloading agent from your mirror..."
     curl -L --fail --silent "$URL" -o /tmp/agent.zip || { err "Download failed"; exit 1; }
