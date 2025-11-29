@@ -1,0 +1,9 @@
+services:
+  nezha:
+    image: ghcr.io/yabloky/nezha:latest
+    container_name: nezha
+    restart: always
+    volumes:
+      - ./data:/dashboard/data
+    ports:
+      - "8008:8008"
