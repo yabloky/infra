@@ -1,0 +1,4 @@
+type: container
+source: docker.io/n8nio/n8n
+keep_versions: 2
+target: ghcr.io/yabloky/n8n

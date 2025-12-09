@@ -1,0 +1,4 @@
+type: container
+source: ghcr.io/moghtech/komodo-core
+target: ghcr.io/yabloky/komodo-core
+keep_versions: 2

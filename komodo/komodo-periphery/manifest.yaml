@@ -1,0 +1,4 @@
+type: container
+source: ghcr.io/moghtech/komodo-periphery
+target: ghcr.io/yabloky/komodo-periphery
+keep_versions: 2

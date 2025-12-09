@@ -1,0 +1,7 @@
+# ./data/
+debug: false
+listen_port: nz_port
+language: nz_language
+site_name: "nz_site_title"
+install_host: nz_hostport
+tls: nz_tls

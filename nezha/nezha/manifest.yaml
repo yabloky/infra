@@ -1,0 +1,5 @@
+type: container
+source: ghcr.io/nezhahq/nezha
+target: ghcr.io/yabloky/nezha
+source_repo: nezhahq/nezha
+keep_versions: 2

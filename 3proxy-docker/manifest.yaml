@@ -1,0 +1,5 @@
+type: container
+source: ghcr.io/tarampampam/3proxy
+source_repo: tarampampam/3proxy-docker
+target: ghcr.io/yabloky/3proxy-docker
+keep_versions: 2
