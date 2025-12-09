@@ -93,20 +93,26 @@ jobs:
             exit 1
           fi
           
-          # Filter to find the one release explicitly marked as 'latest' by the repository owner.
+          # Filter for the highest numbered release that does NOT contain instability suffixes.
           STABLE_RELEASE_FILTER='
             .[] 
-            | select(.prerelease == false and .latest == true)
+            | select(.prerelease == false) 
             | .tag_name 
+            | select(
+                (test("-(alpha|beta|rc|dev|test|snapshot)"; "i") | not) and
+                (test("[0-9]+(\\.[0-9]+)+$"))
+              ) // empty
             '
             
-          # Get the tag name marked 'Latest' from GitHub Releases
+          # Get the highest STABLE version tag from GitHub Releases (Priority 1: ONLY GITHUB)
           UPSTREAM_TAG=$(curl -s "https://api.github.com/repos/${SOURCE_REPO}/releases" \
             | jq -r "$STABLE_RELEASE_FILTER" \
-            | head -n 1) # Note: Using head -n 1 for robustness
+            | sort -Vr \
+            | head -n 1)
 
+          # CRITICAL CHECK: No Fallback to Docker Hub is allowed.
           if [ -z "$UPSTREAM_TAG" ]; then
-            echo "Error: Could not find any stable release marked 'Latest' in GitHub Releases (${SOURCE_REPO}). Aborting."
+            echo "Error: Could not find any stable release in GitHub Releases (${SOURCE_REPO}). Aborting."
             exit 1
           fi
           
