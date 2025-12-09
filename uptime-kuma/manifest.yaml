@@ -1,4 +1,5 @@
 type: container
 source: louislam/uptime-kuma
+source_repo: louislam/uptime-kuma
 target: ghcr.io/yabloky/uptime-kuma
 keep_versions: 2
