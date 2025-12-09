@@ -93,44 +93,31 @@ jobs:
             exit 1
           fi
           
-          # Get the latest STABLE version tag from GitHub Releases (Priority 1)
+          # Filter to find the one release explicitly marked as 'latest' by the repository owner.
+          STABLE_RELEASE_FILTER='
+            .[] 
+            | select(.prerelease == false and .latest == true)
+            | .tag_name 
+            '
+            
+          # Get the tag name marked 'Latest' from GitHub Releases
           UPSTREAM_TAG=$(curl -s "https://api.github.com/repos/${SOURCE_REPO}/releases" \
-            | jq -r '
-              .[] 
-              | select(.prerelease == false) 
-              | .tag_name 
-              | select(
-                  (test("-(alpha|beta|rc|dev|test|snapshot)"; "i") | not) and
-                  (test("^[vV]?[0-9]+(\\.[0-9]+)*$")) # Corrected regex with double backslash for jq
-                ) // empty
-              ' \
-            | sort -Vr \
-            | head -n 1)
+            | jq -r "$STABLE_RELEASE_FILTER" \
+            | head -n 1) # Note: Using head -n 1 for robustness
 
           if [ -z "$UPSTREAM_TAG" ]; then
-            echo "Warning: No stable version tag found in GitHub Releases. Trying Docker Hub."
-            
-            # Priority 2: Fallback to Docker Hub (only for Docker Hub source)
-            if [[ "$SOURCE" == docker.io/* ]]; then
-                REPO="${SOURCE#docker.io/}"
-                REPO="${REPO#library/}"
-                
-                UPSTREAM_TAG=$(curl -s "https://hub.docker.com/v2/repositories/${REPO}/tags/?page_size=10" \
-                  | jq -r '
-                    .results[].name
-                    | select(
-                        (test("-(alpha|beta|rc|dev|test|snapshot)"; "i") | not) and
-                        (test("^[vV]?[0-9]+(\\.[0-9]+)*$")) # Corrected regex with double backslash for jq
-                      ) // empty
-                    ' \
-                  | sort -Vr \
-                  | grep -v '^latest$' | head -n 1)
-            fi
-            
-            if [ -z "$UPSTREAM_TAG" ]; then
-              echo "Error: No stable version tag found in ${SOURCE_REPO} or Docker Hub. Aborting."
-              exit 1
-            fi
+            echo "Error: Could not find any stable release marked 'Latest' in GitHub Releases (${SOURCE_REPO}). Aborting."
+            exit 1
+          fi
+          
+          # Clean the tag: Remove any non-digit/non-dot/non-hyphen characters before the first digit.
+          # This converts 'n8n@1.123.4' to '1.123.4' and 'v1.2.3' to '1.2.3'
+          CLEAN_TAG=$(echo "$UPSTREAM_TAG" | sed 's/^[^0-9]*//' | sed 's/[^0-9\.\-].*$//')
+          
+          if [ -n "$CLEAN_TAG" ]; then
+            UPSTREAM_TAG="$CLEAN_TAG"
+          else
+            echo "Warning: Failed to clean UPSTREAM_TAG '$UPSTREAM_TAG'. Using original."
           fi
           
           # --- COMMON VERSION DETERMINATION END ---
@@ -153,13 +140,11 @@ jobs:
               echo "Upstream 'latest' Image ID: $LATEST_ID"
               echo "Targeting stable version tag: $TARGET_TAG"
 
-              # 2. Check if the target tag already points to the same content (Idempotency)
               LOCAL_TAG_ID=""
               
-              # If the tag exists in our registry, pull it to get its ID
               if docker pull "$TARGET_IMAGE:$TARGET_TAG" > /dev/null 2>&1; then
                 LOCAL_TAG_ID=$(docker inspect --format='{{.Id}}' "$TARGET_IMAGE:$TARGET_TAG")
-                docker rmi "$TARGET_IMAGE:$TARGET_TAG" # Clean up local pull
+                docker rmi "$TARGET_IMAGE:$TARGET_TAG"
               fi
 
               if [ -n "$LOCAL_TAG_ID" ] && [ "$LOCAL_TAG_ID" == "$LATEST_ID" ]; then
@@ -176,39 +161,55 @@ jobs:
               docker tag "$SOURCE_IMAGE" "$TARGET_IMAGE:latest"
               docker push "$TARGET_IMAGE:latest"
 
-              # 5. Cleanup old versions (Retained original logic: keep_versions)
+              # 5. Cleanup Logic (to remove old versions based on KEEP)
               
-              ALL_LOCAL=""
-              if gh api -H "Accept: application/vnd.github+json" \
-                "/users/${{ github.actor }}/packages/container/${TARGET##*/}/versions" >/dev/null 2>&1; then
-                # Fetch all version tags (excluding latest)
-                ALL_LOCAL=$(gh api -H "Accept: application/vnd.github+json" \
-                  "/users/${{ github.actor }}/packages/container/${TARGET##*/}/versions" \
-                  | jq -r 'map(select(.metadata.container.tags and (.metadata.container.tags | length > 0))) | sort_by(.created_at) | reverse | .[].metadata.container.tags[]?' \
-                  | grep -v '^$' | grep -v '^latest$' | sort -Vr)
+              ALL_VERSIONS_DATA=$(gh api -H "Accept: application/vnd.github+json" \
+                "/users/${{ github.actor }}/packages/container/${TARGET##*/}/versions" \
+                2>/dev/null)
+
+              if [ -z "$ALL_VERSIONS_DATA" ]; then
+                  echo "No versions found in registry for cleanup."
+                  break
               fi
 
-              COUNT=$(echo "$ALL_LOCAL" | wc -l)
+              # Extract all numeric/version tags (excluding 'latest') and sort them by version string, reverse
+              ALL_TAGS=$(echo "$ALL_VERSIONS_DATA" \
+                | jq -r '
+                    map(select(.metadata.container.tags and (.metadata.container.tags | length > 0))) 
+                    | sort_by(.created_at) 
+                    | reverse 
+                    | .[].metadata.container.tags[]?
+                  ' \
+                | grep -v '^$' | grep -v '^latest$' | sort -Vr)
+              
+              COUNT=$(echo "$ALL_TAGS" | wc -l)
+              
               if [ "$COUNT" -gt "$KEEP" ]; then
-                echo "Cleanup required: $COUNT versions found, keeping $KEEP."
-                TO_DELETE=$(echo "$ALL_LOCAL" | tail -n +$((KEEP+1)))
+                echo "Cleanup required: $COUNT version tags found, keeping $KEEP."
+                TO_DELETE_TAGS=$(echo "$ALL_TAGS" | tail -n +$((KEEP+1)))
+                
                 while IFS= read -r TAG_DEL; do
                   if [ -z "$TAG_DEL" ]; then continue; fi
-                  ID=$(gh api -H "Accept: application/vnd.github+json" \
-                    "/users/${{ github.actor }}/packages/container/${TARGET##*/}/versions" \
+                  
+                  # Find the unique ID associated with the specific tag
+                  VERSION_ID=$(echo "$ALL_VERSIONS_DATA" \
                     | jq -r ".[] | select(.metadata.container.tags and (.metadata.container.tags | index(\"$TAG_DEL\"))) | .id")
-                  if [ -n "$ID" ]; then
-                    echo "Deleting old version: $TAG_DEL (ID: $ID)"
-                    gh api --method DELETE "/users/${{ github.actor }}/packages/container/${TARGET##*/}/versions/$ID"
+
+                  if [ -n "$VERSION_ID" ]; then
+                    echo "Deleting old version tag: $TAG_DEL (ID: $VERSION_ID)"
+                    # Note: We can only delete the entire version ID, not just a tag.
+                    gh api --method DELETE "/users/${{ github.actor }}/packages/container/${TARGET##*/}/versions/$VERSION_ID"
+                  else
+                      echo "Warning: Could not find Version ID for tag $TAG_DEL."
                   fi
-                done <<< "$TO_DELETE"
+                done <<< "$TO_DELETE_TAGS"
               fi
               ;;
 
             release-binary)
               echo "Syncing binary from GitHub Releases: $SOURCE_REPO"
               
-              # UPSTREAM_TAG already determined by STABLE_VERSION_FILTER
+              # UPSTREAM_TAG already determined by COMMON VERSION DETERMINATION
               
               if [ -z "$ASSET_PATTERN" ]; then
                 echo "Missing asset_pattern"
@@ -231,6 +232,7 @@ jobs:
 
               FILENAME=$(basename "$ASSET_URL")
               TMP_FILE="/tmp/$FILENAME"
+              REPO_FULL="${{ github.repository }}"
               
               # Check if the asset exists for the current UPSTREAM_TAG locally tagged as TAG_LATEST
               if gh release view "$TAG_LATEST" --repo "$REPO_FULL" >/dev/null 2>&1; then
