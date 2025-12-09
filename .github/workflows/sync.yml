@@ -116,14 +116,14 @@ jobs:
             exit 1
           fi
           
-          # Clean the tag: Remove any non-digit/non-dot/non-hyphen characters before the first digit.
-          # This converts 'n8n@1.123.4' to '1.123.4' and 'v1.2.3' to '1.2.3'
-          CLEAN_TAG=$(echo "$UPSTREAM_TAG" | sed 's/^[^0-9]*//' | sed 's/[^0-9\.\-].*$//')
-          
+          # Clean the tag: Extract SemVer pattern (X.Y.Z) explicitly.
+          # Converts 'n8n@1.123.4' to '1.123.4' and 'v1.2.3' to '1.2.3'
+          CLEAN_TAG=$(echo "$UPSTREAM_TAG" | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | head -n1)
+
           if [ -n "$CLEAN_TAG" ]; then
             UPSTREAM_TAG="$CLEAN_TAG"
           else
-            echo "Warning: Failed to clean UPSTREAM_TAG '$UPSTREAM_TAG'. Using original."
+            echo "Warning: Failed to extract version from '$UPSTREAM_TAG'. Using original."
           fi
           
           # --- COMMON VERSION DETERMINATION END ---
