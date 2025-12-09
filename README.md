@@ -15,15 +15,15 @@ This repository mirrors open-source dependencies (Docker images and binary relea
 
 ```yaml
 type: container
-source: ghcr.io/nezhahq/nezha
-source_repo: nezhahq/nezha
+source: ghcr.io/nezhahq/nezha         # or docker.io/nezhahq/nezha
+source_repo: nezhahq/nezha            # GitHub Releases (Version Source of Truth)
 keep_versions: 2
-target: ghcr.io/yabloky/nezha # Optional override
+target: ghcr.io/yabloky/nezha
 
 ### For Binary Releases (`release-binary` type)
 
 type: release-binary
-source_repo: nezhahq/agent
+source_repo: nezhahq/agent            # GitHub Releases (Version and File Source)
 asset_pattern: nezha-agent_linux_amd64.zip
 keep_versions: 2
 tag_prefix: nezha-agent-
