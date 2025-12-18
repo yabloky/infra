@@ -154,9 +154,9 @@ jobs:
               fi
 
               if [ -n "$LOCAL_TAG_ID" ] && [ "$LOCAL_TAG_ID" == "$LATEST_ID" ]; then
-                echo "SKIP: Version tag $TARGET_TAG already points to the same content ($LOCAL_TAG_ID). No push needed."
+                echo "NO NEW VERSION: Upstream version $TARGET_TAG already mirrored. Stopping."
+                exit 0
               else
-                # 3. Publish the new version
                 echo "NEW VERSION DETECTED. Pushing $TARGET_TAG..."
                 docker tag "$SOURCE_IMAGE" "$TARGET_IMAGE:$TARGET_TAG"
                 docker push "$TARGET_IMAGE:$TARGET_TAG"
