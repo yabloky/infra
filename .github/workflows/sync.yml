@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
     inputs:
       component:
-        description: 'Component name (e.g. nezha/nezha-agent)'
+        description: 'Component name (folder with manifest.yaml)'
         required: true
         type: string
 
@@ -39,39 +39,22 @@ jobs:
         id: manifest
         run: |
           MANIFEST="${{ github.event.inputs.component }}/manifest.yaml"
-          if [ ! -f "$MANIFEST" ]; then
-            echo "Manifest not found: $MANIFEST"
-            exit 1
-          fi
+          [ ! -f "$MANIFEST" ] && echo "Manifest not found" && exit 1
 
-          TYPE=$(yq '.type' "$MANIFEST")
-          SOURCE=$(yq '.source' "$MANIFEST")
-          KEEP=$(yq '.keep_versions // 2' "$MANIFEST")
-          SOURCE_REPO=$(yq '.source_repo // ""' "$MANIFEST")
-          ASSET_PATTERN=$(yq '.asset_pattern // ""' "$MANIFEST")
-          TARGET_PATH=$(yq '.target_path // "."' "$MANIFEST")
-          TAG_PREFIX=$(yq '.tag_prefix // ""' "$MANIFEST")
+          echo "type=$(yq '.type' "$MANIFEST")" >> $GITHUB_OUTPUT
+          echo "source=$(yq '.source // ""' "$MANIFEST")" >> $GITHUB_OUTPUT
+          echo "keep=$(yq '.keep_versions // 2' "$MANIFEST")" >> $GITHUB_OUTPUT
+          echo "source_repo=$(yq '.source_repo // ""' "$MANIFEST")" >> $GITHUB_OUTPUT
+          echo "asset_pattern=$(yq '.asset_pattern // ""' "$MANIFEST")" >> $GITHUB_OUTPUT
+          echo "tag_prefix=$(yq '.tag_prefix // ""' "$MANIFEST")" >> $GITHUB_OUTPUT
 
           TARGET_OVERRIDE=$(yq '.target // ""' "$MANIFEST")
           if [ -n "$TARGET_OVERRIDE" ]; then
-            TARGET="$TARGET_OVERRIDE"
+            echo "target=$TARGET_OVERRIDE" >> $GITHUB_OUTPUT
           else
-            if [[ "$SOURCE" == */* ]]; then
-              IMAGE_NAME="${SOURCE#*/}"
-            else
-              IMAGE_NAME="$SOURCE"
-            fi
-            TARGET="${{ env.TARGET_NS }}/$IMAGE_NAME"
+            SOURCE=$(yq '.source // ""' "$MANIFEST")
+            echo "target=${{ env.TARGET_NS }}/${SOURCE#*/}" >> $GITHUB_OUTPUT
           fi
-
-          echo "type=$TYPE" >> $GITHUB_OUTPUT
-          echo "source=$SOURCE" >> $GITHUB_OUTPUT
-          echo "target=$TARGET" >> $GITHUB_OUTPUT
-          echo "keep=$KEEP" >> $GITHUB_OUTPUT
-          echo "source_repo=$SOURCE_REPO" >> $GITHUB_OUTPUT
-          echo "asset_pattern=$ASSET_PATTERN" >> $GITHUB_OUTPUT
-          echo "target_path=$TARGET_PATH" >> $GITHUB_OUTPUT
-          echo "tag_prefix=$TAG_PREFIX" >> $GITHUB_OUTPUT
 
       - name: Sync by type
         run: |
@@ -81,160 +64,70 @@ jobs:
           KEEP="${{ steps.manifest.outputs.keep }}"
           SOURCE_REPO="${{ steps.manifest.outputs.source_repo }}"
           ASSET_PATTERN="${{ steps.manifest.outputs.asset_pattern }}"
-          TARGET_PATH="${{ steps.manifest.outputs.target_path }}"
           TAG_PREFIX="${{ steps.manifest.outputs.tag_prefix }}"
-
-          mkdir -p "$TARGET_PATH"
-
-          # --- COMMON VERSION DETERMINATION START ---
-          
-          if [ -z "$SOURCE_REPO" ]; then
-            echo "Error: SOURCE_REPO must be specified for version tracking."
-            exit 1
-          fi
-          
-          # Filter for the highest numbered release that does NOT contain instability suffixes.
-          STABLE_RELEASE_FILTER='
-            .[] 
-            | select(.prerelease == false) 
-            | .tag_name 
-            | select(
-                (test("-(alpha|beta|rc|dev|test|snapshot)"; "i") | not) and
-                (test("[0-9]+(\\.[0-9]+)+$"))
-              ) // empty
-            '
-            
-          # Get the highest STABLE version tag from GitHub Releases (Priority 1: ONLY GITHUB)
-          UPSTREAM_TAG=$(curl -s "https://api.github.com/repos/${SOURCE_REPO}/releases" \
-            | jq -r "$STABLE_RELEASE_FILTER" \
-            | sort -Vr \
-            | head -n 1)
-
-          # CRITICAL CHECK: No Fallback to Docker Hub is allowed.
-          if [ -z "$UPSTREAM_TAG" ]; then
-            echo "Error: Could not find any stable release in GitHub Releases (${SOURCE_REPO}). Aborting."
-            exit 1
-          fi
-          
-          # Clean the tag: Extract SemVer pattern (X.Y.Z) explicitly.
-          # Converts 'n8n@1.123.4' to '1.123.4' and 'v1.2.3' to '1.2.3'
-          CLEAN_TAG=$(echo "$UPSTREAM_TAG" | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | head -n1)
-
-          if [ -n "$CLEAN_TAG" ]; then
-            UPSTREAM_TAG="$CLEAN_TAG"
-          else
-            echo "Warning: Failed to extract version from '$UPSTREAM_TAG'. Using original."
-          fi
-          
-          # --- COMMON VERSION DETERMINATION END ---
 
           case "$TYPE" in
             container)
               echo "Syncing container: $SOURCE → $TARGET"
-
-              SOURCE_IMAGE="$SOURCE:latest"
-              TARGET_IMAGE="$TARGET"
-              TARGET_TAG="$UPSTREAM_TAG"
+              RAW_TAG=$(curl -s -H "Authorization: token ${GH_TOKEN}" "https://api.github.com/repos/${SOURCE_REPO}/releases/latest" | jq -r '.tag_name // empty')
+              CLEAN_VERSION=$(echo "$RAW_TAG" | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | head -n1)
               
-              # 1. Pull the 'latest' image (assuming author updates latest to match UPSTREAM_TAG)
-              if ! docker pull "$SOURCE_IMAGE"; then
-                echo "Error: Failed to pull $SOURCE_IMAGE. Aborting container sync."
-                exit 1
+              docker pull "$SOURCE:latest"
+              UPSTREAM_ID=$(docker inspect --format='{{.Id}}' "$SOURCE:latest")
+              
+              LOCAL_LATEST_ID=""
+              if docker pull "$TARGET:latest" > /dev/null 2>&1; then
+                LOCAL_LATEST_ID=$(docker inspect --format='{{.Id}}' "$TARGET:latest")
               fi
 
-              LATEST_ID=$(docker inspect --format='{{.Id}}' "$SOURCE_IMAGE")
-              echo "Upstream 'latest' Image ID: $LATEST_ID"
-              echo "Targeting stable version tag: $TARGET_TAG"
-
-              LOCAL_TAG_ID=""
-              
-              if docker pull "$TARGET_IMAGE:$TARGET_TAG" > /dev/null 2>&1; then
-                LOCAL_TAG_ID=$(docker inspect --format='{{.Id}}' "$TARGET_IMAGE:$TARGET_TAG")
-                docker rmi "$TARGET_IMAGE:$TARGET_TAG"
+              if [ "$LOCAL_LATEST_ID" == "$UPSTREAM_ID" ]; then
+                echo "NO NEW VERSION: Image IDs match."; exit 0
               fi
 
-              if [ -n "$LOCAL_TAG_ID" ] && [ "$LOCAL_TAG_ID" == "$LATEST_ID" ]; then
-                echo "NO NEW VERSION: Upstream version $TARGET_TAG already mirrored. Stopping."
-                exit 0
-              else
-                echo "NEW VERSION DETECTED. Pushing $TARGET_TAG..."
-                docker tag "$SOURCE_IMAGE" "$TARGET_IMAGE:$TARGET_TAG"
-                docker push "$TARGET_IMAGE:$TARGET_TAG"
-              fi
-              
-              # 4. Ensure 'latest' always points to the newest published image ID
-              echo "Ensuring 'latest' tag points to $LATEST_ID."
-              docker tag "$SOURCE_IMAGE" "$TARGET_IMAGE:latest"
-              docker push "$TARGET_IMAGE:latest"
-
-              # 5. Cleanup Logic (to remove old versions based on KEEP)
-              
-              ALL_VERSIONS_DATA=$(gh api -H "Accept: application/vnd.github+json" \
-                "/users/${{ github.actor }}/packages/container/${TARGET##*/}/versions" \
-                2>/dev/null)
-
-              if [ -z "$ALL_VERSIONS_DATA" ]; then
-                  echo "No versions found in registry for cleanup."
-                  break
+              # Rollback: latest -> back (Fixed via inspect check)
+              if docker image inspect "$TARGET:latest" >/dev/null 2>&1; then
+                echo "Backing up current latest..."
+                docker tag "$TARGET:latest" "$TARGET:back"
+                docker push "$TARGET:back"
               fi
 
-              # Extract all numeric/version tags (excluding 'latest') and sort them by version string, reverse
-              ALL_TAGS=$(echo "$ALL_VERSIONS_DATA" \
-                | jq -r '
-                    map(select(.metadata.container.tags and (.metadata.container.tags | length > 0))) 
-                    | sort_by(.created_at) 
-                    | reverse 
-                    | .[].metadata.container.tags[]?
-                  ' \
-                | grep -v '^$' | grep -v '^latest$' | sort -Vr)
+              # Version tagging (Fixed: no version tag if no semver found)
+              if [ -n "$CLEAN_VERSION" ]; then
+                docker tag "$SOURCE:latest" "$TARGET:$CLEAN_VERSION"
+                docker push "$TARGET:$CLEAN_VERSION"
+              fi
               
-              COUNT=$(echo "$ALL_TAGS" | wc -l)
-              
+              docker tag "$SOURCE:latest" "$TARGET:latest"
+              docker push "$TARGET:latest"
+
+              # Accurate Cleanup (by creation date)
+              ALL_VERSIONS=$(gh api -H "Accept: application/vnd.github+json" "/users/${{ github.actor }}/packages/container/${TARGET##*/}/versions" | jq -r 'map(select(.metadata.container.tags | length > 0)) | sort_by(.created_at) | reverse | .[].metadata.container.tags[]?' | grep -vE 'latest|back' | uniq)
+              COUNT=$(echo "$ALL_VERSIONS" | wc -l)
               if [ "$COUNT" -gt "$KEEP" ]; then
-                echo "Cleanup required: $COUNT version tags found, keeping $KEEP."
-                TO_DELETE_TAGS=$(echo "$ALL_TAGS" | tail -n +$((KEEP+1)))
-                
-                while IFS= read -r TAG_DEL; do
-                  if [ -z "$TAG_DEL" ]; then continue; fi
-                  
-                  # Find the unique ID associated with the specific tag
-                  VERSION_ID=$(echo "$ALL_VERSIONS_DATA" \
-                    | jq -r ".[] | select(.metadata.container.tags and (.metadata.container.tags | index(\"$TAG_DEL\"))) | .id")
-
-                  if [ -n "$VERSION_ID" ]; then
-                    echo "Deleting old version tag: $TAG_DEL (ID: $VERSION_ID)"
-                    # Note: We can only delete the entire version ID, not just a tag.
-                    gh api --method DELETE "/users/${{ github.actor }}/packages/container/${TARGET##*/}/versions/$VERSION_ID"
-                  else
-                      echo "Warning: Could not find Version ID for tag $TAG_DEL."
-                  fi
-                done <<< "$TO_DELETE_TAGS"
+                TO_DELETE=$(echo "$ALL_VERSIONS" | tail -n +$((KEEP+1)))
+                for T in $TO_DELETE; do
+                  V_ID=$(gh api "/users/${{ github.actor }}/packages/container/${TARGET##*/}/versions" | jq -r ".[] | select(.metadata.container.tags | index(\"$T\")) | .id")
+                  gh api --method DELETE "/users/${{ github.actor }}/packages/container/${TARGET##*/}/versions/$V_ID"
+                done
               fi
               ;;
 
-          release-binary)
+            release-binary)
               echo "Syncing binary: $SOURCE_REPO"
               REPO_FULL="${{ github.repository }}"
               TAG_LATEST="${TAG_PREFIX}latest"
+              TAG_BACK="${TAG_PREFIX}back"
 
-              # 1. Get latest release data via API
               UPSTREAM_JSON=$(curl -s -H "Authorization: token ${GH_TOKEN}" "https://api.github.com/repos/${SOURCE_REPO}/releases/latest")
-              UPSTREAM_TAG=$(echo "$UPSTREAM_JSON" | jq -r '.tag_name')
+              UPSTREAM_TAG=$(echo "$UPSTREAM_JSON" | jq -r '.tag_name // empty')
+              ASSET_URL=$(echo "$UPSTREAM_JSON" | jq -r --arg pat "$ASSET_PATTERN" '(.assets // []) | .[] | select(.name | endswith($pat)) | .browser_download_url')
               
-              # Find asset URL by pattern
-              ASSET_URL=$(echo "$UPSTREAM_JSON" | jq -r --arg pat "$ASSET_PATTERN" '.assets[] | select(.name | endswith($pat)) | .browser_download_url')
-              
-              if [ -z "$ASSET_URL" ] || [ "$ASSET_URL" == "null" ]; then
-                echo "Error: Asset not found"; exit 1
-              fi
+              [ -z "$ASSET_URL" ] || [ "$ASSET_URL" == "null" ] && echo "Asset not found" && exit 1
 
-              # 2. Download upstream binary and calculate SHA256
               FILENAME=$(basename "$ASSET_URL")
               curl -L -s -o "/tmp/$FILENAME" "$ASSET_URL"
               UPSTREAM_HASH=$(sha256sum "/tmp/$FILENAME" | awk '{print $1}')
-              echo "Upstream Hash: $UPSTREAM_HASH"
 
-              # 3. Compare with local latest binary hash
               LOCAL_HASH=""
               if gh release view "$TAG_LATEST" --repo "$REPO_FULL" >/dev/null 2>&1; then
                 mkdir -p /tmp/local
@@ -242,41 +135,34 @@ jobs:
                 [ -f "/tmp/local/$FILENAME" ] && LOCAL_HASH=$(sha256sum "/tmp/local/$FILENAME" | awk '{print $1}')
               fi
 
-              if [ "$LOCAL_HASH" == "$UPSTREAM_HASH" ]; then
-                echo "NO NEW VERSION: Hashes match."
-                exit 0
+              [ "$LOCAL_HASH" == "$UPSTREAM_HASH" ] && echo "NO NEW VERSION" && exit 0
+
+              # Rollback: latest -> back
+              if [ -n "$LOCAL_HASH" ]; then
+                gh release delete "$TAG_BACK" --repo "$REPO_FULL" --yes >/dev/null 2>&1 || true
+                gh release create "$TAG_BACK" "/tmp/local/$FILENAME" --repo "$REPO_FULL" --title "$TAG_BACK" --notes "Prev stable"
               fi
 
-              # 4. New version flow: Create versioned release and update latest
-              echo "NEW VERSION DETECTED: $UPSTREAM_TAG"
+              # Version tagging (Fixed: only if semver found)
+              CLEAN_VERSION=$(echo "$UPSTREAM_TAG" | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | head -n1)
+              if [ -n "$CLEAN_VERSION" ]; then
+                TARGET_TAG="${TAG_PREFIX}${CLEAN_VERSION}"
+                gh release delete "$TARGET_TAG" --repo "$REPO_FULL" --yes >/dev/null 2>&1 || true
+                gh release create "$TARGET_TAG" "/tmp/$FILENAME" --repo "$REPO_FULL" --title "$TARGET_TAG" --notes "Mirrored from $UPSTREAM_TAG"
+              fi
               
-              # Extract clean version for tagging
-              VERSION=$(echo "$UPSTREAM_TAG" | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | head -n1)
-              [ -z "$VERSION" ] && VERSION="$UPSTREAM_TAG"
-              TARGET_TAG="${TAG_PREFIX}${VERSION}"
-
-              # Create versioned release
-              gh release create "$TARGET_TAG" "/tmp/$FILENAME" --repo "$REPO_FULL" --title "$TARGET_TAG" --notes "Mirrored from $UPSTREAM_TAG" || true
-              
-              # Re-create latest tag
               gh release delete "$TAG_LATEST" --repo "$REPO_FULL" --yes >/dev/null 2>&1 || true
-              gh release create "$TAG_LATEST" "/tmp/$FILENAME" --repo "$REPO_FULL" --title "$TAG_LATEST" --notes "Upstream Tag: $UPSTREAM_TAG | SHA256: $UPSTREAM_HASH"
+              gh release create "$TAG_LATEST" "/tmp/$FILENAME" --repo "$REPO_FULL" --title "$TAG_LATEST" --notes "Tag: $UPSTREAM_TAG | SHA256: $UPSTREAM_HASH"
 
-              # 5. Cleanup: Keep only $KEEP number of old releases
-              ALL_TAGS=$(gh api "repos/$REPO_FULL/releases" --jq '.[] | .tag_name' | grep "^${TAG_PREFIX}" | grep -v "latest" | sort -Vr)
+              # Accurate Cleanup (by creation date)
+              ALL_TAGS=$(gh api "repos/$REPO_FULL/releases" --jq 'sort_by(.created_at) | reverse | .[].tag_name' | grep "^${TAG_PREFIX}" | grep -vE 'latest|back')
               COUNT=$(echo "$ALL_TAGS" | wc -l)
               if [ "$COUNT" -gt "$KEEP" ]; then
-                echo "Cleaning up old releases..."
                 TO_DELETE=$(echo "$ALL_TAGS" | tail -n +$((KEEP+1)))
                 for T in $TO_DELETE; do
                   gh release delete "$T" --repo "$REPO_FULL" --yes
                 done
               fi
-              ;;
-
-            *)
-              echo "Unknown type: $TYPE"
-              exit 1
               ;;
           esac
         env:
