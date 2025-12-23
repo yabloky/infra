@@ -46,6 +46,7 @@ jobs:
           echo "keep=$(yq '.keep_versions // 2' "$MANIFEST")" >> $GITHUB_OUTPUT
           echo "source_repo=$(yq '.source_repo // ""' "$MANIFEST")" >> $GITHUB_OUTPUT
           echo "asset_pattern=$(yq '.asset_pattern // ""' "$MANIFEST")" >> $GITHUB_OUTPUT
+          echo "target_path=$(yq '.target_path // "."' "$MANIFEST")" >> $GITHUB_OUTPUT
           echo "tag_prefix=$(yq '.tag_prefix // ""' "$MANIFEST")" >> $GITHUB_OUTPUT
 
           TARGET_OVERRIDE=$(yq '.target // ""' "$MANIFEST")
@@ -84,14 +85,11 @@ jobs:
                 echo "NO NEW VERSION: Image IDs match."; exit 0
               fi
 
-              # Rollback: latest -> back (Fixed via inspect check)
               if docker image inspect "$TARGET:latest" >/dev/null 2>&1; then
-                echo "Backing up current latest..."
                 docker tag "$TARGET:latest" "$TARGET:back"
                 docker push "$TARGET:back"
               fi
 
-              # Version tagging (Fixed: no version tag if no semver found)
               if [ -n "$CLEAN_VERSION" ]; then
                 docker tag "$SOURCE:latest" "$TARGET:$CLEAN_VERSION"
                 docker push "$TARGET:$CLEAN_VERSION"
@@ -100,7 +98,6 @@ jobs:
               docker tag "$SOURCE:latest" "$TARGET:latest"
               docker push "$TARGET:latest"
 
-              # Accurate Cleanup (by creation date)
               ALL_VERSIONS=$(gh api -H "Accept: application/vnd.github+json" "/users/${{ github.actor }}/packages/container/${TARGET##*/}/versions" | jq -r 'map(select(.metadata.container.tags | length > 0)) | sort_by(.created_at) | reverse | .[].metadata.container.tags[]?' | grep -vE 'latest|back' | uniq)
               COUNT=$(echo "$ALL_VERSIONS" | wc -l)
               if [ "$COUNT" -gt "$KEEP" ]; then
@@ -120,9 +117,13 @@ jobs:
 
               UPSTREAM_JSON=$(curl -s -H "Authorization: token ${GH_TOKEN}" "https://api.github.com/repos/${SOURCE_REPO}/releases/latest")
               UPSTREAM_TAG=$(echo "$UPSTREAM_JSON" | jq -r '.tag_name // empty')
-              ASSET_URL=$(echo "$UPSTREAM_JSON" | jq -r --arg pat "$ASSET_PATTERN" '(.assets // []) | .[] | select(.name | endswith($pat)) | .browser_download_url')
               
-              [ -z "$ASSET_URL" ] || [ "$ASSET_URL" == "null" ] && echo "Asset not found" && exit 1
+              # FIX: Use contains instead of endswith to match filenames like netclient-linux-amd64-v1.4.0
+              ASSET_URL=$(echo "$UPSTREAM_JSON" | jq -r --arg pat "$ASSET_PATTERN" '(.assets // []) | .[] | select(.name | contains($pat)) | .browser_download_url' | head -n 1)
+              
+              if [ -z "$ASSET_URL" ] || [ "$ASSET_URL" == "null" ]; then
+                echo "Error: Asset matching '$ASSET_PATTERN' not found"; exit 1
+              fi
 
               FILENAME=$(basename "$ASSET_URL")
               curl -L -s -o "/tmp/$FILENAME" "$ASSET_URL"
@@ -135,15 +136,15 @@ jobs:
                 [ -f "/tmp/local/$FILENAME" ] && LOCAL_HASH=$(sha256sum "/tmp/local/$FILENAME" | awk '{print $1}')
               fi
 
-              [ "$LOCAL_HASH" == "$UPSTREAM_HASH" ] && echo "NO NEW VERSION" && exit 0
+              if [ "$LOCAL_HASH" == "$UPSTREAM_HASH" ]; then
+                echo "NO NEW VERSION: Binary hashes match."; exit 0
+              fi
 
-              # Rollback: latest -> back
               if [ -n "$LOCAL_HASH" ]; then
                 gh release delete "$TAG_BACK" --repo "$REPO_FULL" --yes >/dev/null 2>&1 || true
                 gh release create "$TAG_BACK" "/tmp/local/$FILENAME" --repo "$REPO_FULL" --title "$TAG_BACK" --notes "Prev stable"
               fi
 
-              # Version tagging (Fixed: only if semver found)
               CLEAN_VERSION=$(echo "$UPSTREAM_TAG" | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | head -n1)
               if [ -n "$CLEAN_VERSION" ]; then
                 TARGET_TAG="${TAG_PREFIX}${CLEAN_VERSION}"
@@ -154,7 +155,6 @@ jobs:
               gh release delete "$TAG_LATEST" --repo "$REPO_FULL" --yes >/dev/null 2>&1 || true
               gh release create "$TAG_LATEST" "/tmp/$FILENAME" --repo "$REPO_FULL" --title "$TAG_LATEST" --notes "Tag: $UPSTREAM_TAG | SHA256: $UPSTREAM_HASH"
 
-              # Accurate Cleanup (by creation date)
               ALL_TAGS=$(gh api "repos/$REPO_FULL/releases" --jq 'sort_by(.created_at) | reverse | .[].tag_name' | grep "^${TAG_PREFIX}" | grep -vE 'latest|back')
               COUNT=$(echo "$ALL_TAGS" | wc -l)
               if [ "$COUNT" -gt "$KEEP" ]; then
