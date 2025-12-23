@@ -212,7 +212,7 @@ jobs:
               fi
               ;;
 
-release-binary)
+          release-binary)
               echo "Syncing binary: $SOURCE_REPO"
               REPO_FULL="${{ github.repository }}"
               TAG_LATEST="${TAG_PREFIX}latest"
