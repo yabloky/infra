@@ -1,5 +1,5 @@
 type: release-binary
-source_repo: gravitl/netmaker
+source_repo: gravitl/netclient
 asset_pattern: netclient-linux-amd64
 tag_prefix: netclient-
 keep_versions: 2
