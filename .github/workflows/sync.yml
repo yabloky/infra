@@ -212,84 +212,66 @@ jobs:
               fi
               ;;
 
-            release-binary)
-              echo "Syncing binary from GitHub Releases: $SOURCE_REPO"
-              
-              # UPSTREAM_TAG already determined by COMMON VERSION DETERMINATION
-              
-              if [ -z "$ASSET_PATTERN" ]; then
-                echo "Missing asset_pattern"
-                exit 1
-              fi
-
-              # Check if the desired tag already exists in our repo (gh releases)
-              TAG_LATEST="${TAG_PREFIX}latest"
-              TAG_VERSION="${TAG_PREFIX}${UPSTREAM_TAG}"
-              
-              CURRENT_VERSION_IN_REPO=""
-
-              # 1. Download asset URL
-              # Note: UPSTREAM_TAG is calculated globally using STABLE_VERSION_FILTER
-              ASSET_URL=$(curl -s "https://api.github.com/repos/${SOURCE_REPO}/releases/tags/${UPSTREAM_TAG}" | jq -r --arg pat "$ASSET_PATTERN" '.assets[] | select(.name | endswith($pat)) | .browser_download_url')
-              if [ -z "$ASSET_URL" ]; then
-                echo "Asset not found for $UPSTREAM_TAG"
-                exit 1
-              fi
-
-              FILENAME=$(basename "$ASSET_URL")
-              TMP_FILE="/tmp/$FILENAME"
+release-binary)
+              echo "Syncing binary: $SOURCE_REPO"
               REPO_FULL="${{ github.repository }}"
+              TAG_LATEST="${TAG_PREFIX}latest"
+
+              # 1. Get latest release data via API
+              UPSTREAM_JSON=$(curl -s -H "Authorization: token ${GH_TOKEN}" "https://api.github.com/repos/${SOURCE_REPO}/releases/latest")
+              UPSTREAM_TAG=$(echo "$UPSTREAM_JSON" | jq -r '.tag_name')
               
-              # Check if the asset exists for the current UPSTREAM_TAG locally tagged as TAG_LATEST
+              # Find asset URL by pattern
+              ASSET_URL=$(echo "$UPSTREAM_JSON" | jq -r --arg pat "$ASSET_PATTERN" '.assets[] | select(.name | endswith($pat)) | .browser_download_url')
+              
+              if [ -z "$ASSET_URL" ] || [ "$ASSET_URL" == "null" ]; then
+                echo "Error: Asset not found"; exit 1
+              fi
+
+              # 2. Download upstream binary and calculate SHA256
+              FILENAME=$(basename "$ASSET_URL")
+              curl -L -s -o "/tmp/$FILENAME" "$ASSET_URL"
+              UPSTREAM_HASH=$(sha256sum "/tmp/$FILENAME" | awk '{print $1}')
+              echo "Upstream Hash: $UPSTREAM_HASH"
+
+              # 3. Compare with local latest binary hash
+              LOCAL_HASH=""
               if gh release view "$TAG_LATEST" --repo "$REPO_FULL" >/dev/null 2>&1; then
-                 # Extract version from existing release body (Version: X.Y.Z)
-                CURRENT_VERSION_IN_REPO=$(gh release view "$TAG_LATEST" --repo "$REPO_FULL" --json body -q '.body' 2>/dev/null | grep -o 'Version: [^ ]*' | cut -d' ' -f2)
+                mkdir -p /tmp/local
+                gh release download "$TAG_LATEST" --repo "$REPO_FULL" -p "$FILENAME" -D "/tmp/local" >/dev/null 2>&1 || true
+                [ -f "/tmp/local/$FILENAME" ] && LOCAL_HASH=$(sha256sum "/tmp/local/$FILENAME" | awk '{print $1}')
               fi
-              
-              if [ "$CURRENT_VERSION_IN_REPO" == "$UPSTREAM_TAG" ]; then
-                echo "SKIP: Binary version $UPSTREAM_TAG already exists and is marked as $TAG_LATEST."
-              else
-                # 2. Archive the previous TAG_LATEST (if it existed)
-                if [ -n "$CURRENT_VERSION_IN_REPO" ]; then
-                  ARCHIVE_TAG="${TAG_PREFIX}${CURRENT_VERSION_IN_REPO#v}"
-                  
-                  echo "Archiving old version: $CURRENT_VERSION_IN_REPO → $ARCHIVE_TAG"
-                  
-                  # Delete old releases that are not the current version or the archive version (Cleanup)
-                  ALL_TAGS=$(gh api "repos/$REPO_FULL/releases" --jq '.[].tag_name' 2>/dev/null)
-                  echo "$ALL_TAGS" | while IFS= read -r T; do
-                    if [ -n "$T" ] && [ "$T" != "$TAG_LATEST" ] && [ "$T" != "$ARCHIVE_TAG" ]; then
-                      echo "Deleting obsolete release: $T"
-                      gh release delete "$T" --repo "$REPO_FULL" --yes
-                    fi
-                  done
-                  
-                  # Download the old binary before deleting TAG_LATEST
-                  gh release download "$TAG_LATEST" --repo "$REPO_FULL" -p "$FILENAME" -D "/tmp"
-                  
-                  # Delete old TAG_LATEST
-                  gh release delete "$TAG_LATEST" --repo "$REPO_FULL" --yes
 
-                  # Create archive tag
-                  gh release create "$ARCHIVE_TAG" "/tmp/$FILENAME" \
-                    --repo "$REPO_FULL" \
-                    --title "$ARCHIVE_TAG" \
-                    --notes "Archived version $CURRENT_VERSION_IN_REPO"
-                fi
-
-                # 3. Download the new asset and publish it as TAG_LATEST
-                echo "Downloading new version $UPSTREAM_TAG..."
-                curl -L -o "$TMP_FILE" "$ASSET_URL"
-
-                gh release create "$TAG_LATEST" "$TMP_FILE" \
-                  --repo "$REPO_FULL" \
-                  --title "$TAG_LATEST" \
-                  --notes "Version: $UPSTREAM_TAG\nMirrored from https://github.com/${SOURCE_REPO}"
-                
-                rm -f "$TMP_FILE"
+              if [ "$LOCAL_HASH" == "$UPSTREAM_HASH" ]; then
+                echo "NO NEW VERSION: Hashes match."
+                exit 0
               fi
+
+              # 4. New version flow: Create versioned release and update latest
+              echo "NEW VERSION DETECTED: $UPSTREAM_TAG"
               
-              echo "Done. Current binary release is $TAG_LATEST (Version: $UPSTREAM_TAG)."
+              # Extract clean version for tagging
+              VERSION=$(echo "$UPSTREAM_TAG" | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | head -n1)
+              [ -z "$VERSION" ] && VERSION="$UPSTREAM_TAG"
+              TARGET_TAG="${TAG_PREFIX}${VERSION}"
+
+              # Create versioned release
+              gh release create "$TARGET_TAG" "/tmp/$FILENAME" --repo "$REPO_FULL" --title "$TARGET_TAG" --notes "Mirrored from $UPSTREAM_TAG" || true
+              
+              # Re-create latest tag
+              gh release delete "$TAG_LATEST" --repo "$REPO_FULL" --yes >/dev/null 2>&1 || true
+              gh release create "$TAG_LATEST" "/tmp/$FILENAME" --repo "$REPO_FULL" --title "$TAG_LATEST" --notes "Upstream Tag: $UPSTREAM_TAG | SHA256: $UPSTREAM_HASH"
+
+              # 5. Cleanup: Keep only $KEEP number of old releases
+              ALL_TAGS=$(gh api "repos/$REPO_FULL/releases" --jq '.[] | .tag_name' | grep "^${TAG_PREFIX}" | grep -v "latest" | sort -Vr)
+              COUNT=$(echo "$ALL_TAGS" | wc -l)
+              if [ "$COUNT" -gt "$KEEP" ]; then
+                echo "Cleaning up old releases..."
+                TO_DELETE=$(echo "$ALL_TAGS" | tail -n +$((KEEP+1)))
+                for T in $TO_DELETE; do
+                  gh release delete "$T" --repo "$REPO_FULL" --yes
+                done
+              fi
               ;;
 
             *)
