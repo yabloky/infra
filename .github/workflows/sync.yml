@@ -110,59 +110,78 @@ jobs:
               ;;
 
             release-binary)
-              echo "Syncing binary: $SOURCE_REPO"
+              echo "Syncing binary from: $SOURCE_REPO"
               REPO_FULL="${{ github.repository }}"
-              TAG_LATEST="${TAG_PREFIX}latest"
-              TAG_BACK="${TAG_PREFIX}back"
+              
+              # Normalize release name (e.g., 'netclient')
+              DIST_TAG=$(echo "$TAG_PREFIX" | sed 's/-$//')
+              [ -z "$DIST_TAG" ] && DIST_TAG="${SOURCE##*/}"
 
-              UPSTREAM_JSON=$(curl -s -H "Authorization: token ${GH_TOKEN}" "https://api.github.com/repos/${SOURCE_REPO}/releases/latest")
+              # Fetch upstream info
+              UPSTREAM_JSON=$(curl -s -H "Authorization: token ${GH_TOKEN}" "https://api.github.com/repos/${SOURCE_REPO}/releases" | jq '.[0]')
               UPSTREAM_TAG=$(echo "$UPSTREAM_JSON" | jq -r '.tag_name // empty')
               
-              # FIX: Use contains instead of endswith to match filenames like netclient-linux-amd64-v1.4.0
               ASSET_URL=$(echo "$UPSTREAM_JSON" | jq -r --arg pat "$ASSET_PATTERN" '(.assets // []) | .[] | select(.name | contains($pat)) | .browser_download_url' | head -n 1)
               
               if [ -z "$ASSET_URL" ] || [ "$ASSET_URL" == "null" ]; then
-                echo "Error: Asset matching '$ASSET_PATTERN' not found"; exit 1
+                echo "Error: Asset matching '$ASSET_PATTERN' not found in $UPSTREAM_TAG"
+                exit 1
               fi
 
               FILENAME=$(basename "$ASSET_URL")
               curl -L -s -o "/tmp/$FILENAME" "$ASSET_URL"
               UPSTREAM_HASH=$(sha256sum "/tmp/$FILENAME" | awk '{print $1}')
 
+              # Check if distribution release exists
+              if ! gh release view "$DIST_TAG" --repo "$REPO_FULL" >/dev/null 2>&1; then
+                echo "Creating release: $DIST_TAG"
+                gh release create "$DIST_TAG" --repo "$REPO_FULL" --title "$DIST_TAG" --notes "Tracking $SOURCE_REPO"
+              fi
+
+              # --- GET PREVIOUS VERSION INFO FROM DESCRIPTION ---
+              # We read the current description to find out what version is CURRENTLY there before we overwrite it.
+              OLD_NOTES=$(gh release view "$DIST_TAG" --repo "$REPO_FULL" --json body -q .body || echo "")
+              # Extract the version after "Current: "
+              PREV_VERSION_TAG=$(echo "$OLD_NOTES" | grep -oE 'Current: \S+' | awk '{print $2}' || echo "None")
+              
+              # Download current local 'latest' to check hash
               LOCAL_HASH=""
-              if gh release view "$TAG_LATEST" --repo "$REPO_FULL" >/dev/null 2>&1; then
-                mkdir -p /tmp/local
-                gh release download "$TAG_LATEST" --repo "$REPO_FULL" -p "$FILENAME" -D "/tmp/local" >/dev/null 2>&1 || true
-                [ -f "/tmp/local/$FILENAME" ] && LOCAL_HASH=$(sha256sum "/tmp/local/$FILENAME" | awk '{print $1}')
+              mkdir -p /tmp/local
+              if gh release download "$DIST_TAG" --repo "$REPO_FULL" -p "$FILENAME" -D "/tmp/local" >/dev/null 2>&1; then
+                 LOCAL_HASH=$(sha256sum "/tmp/local/$FILENAME" | awk '{print $1}')
               fi
 
               if [ "$LOCAL_HASH" == "$UPSTREAM_HASH" ]; then
-                echo "NO NEW VERSION: Binary hashes match."; exit 0
+                echo "Up to date."
+                exit 0
               fi
 
+              echo "New version detected ($UPSTREAM_TAG). Updating..."
+
+              # 1. MOVE OLD LATEST -> BACK (Overwrite existing back)
               if [ -n "$LOCAL_HASH" ]; then
-                gh release delete "$TAG_BACK" --repo "$REPO_FULL" --yes >/dev/null 2>&1 || true
-                gh release create "$TAG_BACK" "/tmp/local/$FILENAME" --repo "$REPO_FULL" --title "$TAG_BACK" --notes "Prev stable"
-              fi
-
-              CLEAN_VERSION=$(echo "$UPSTREAM_TAG" | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | head -n1)
-              if [ -n "$CLEAN_VERSION" ]; then
-                TARGET_TAG="${TAG_PREFIX}${CLEAN_VERSION}"
-                gh release delete "$TARGET_TAG" --repo "$REPO_FULL" --yes >/dev/null 2>&1 || true
-                gh release create "$TARGET_TAG" "/tmp/$FILENAME" --repo "$REPO_FULL" --title "$TARGET_TAG" --notes "Mirrored from $UPSTREAM_TAG"
+                cp "/tmp/local/$FILENAME" "/tmp/${FILENAME}-back"
+                gh release upload "$DIST_TAG" "/tmp/${FILENAME}-back" --repo "$REPO_FULL" --clobber
               fi
               
-              gh release delete "$TAG_LATEST" --repo "$REPO_FULL" --yes >/dev/null 2>&1 || true
-              gh release create "$TAG_LATEST" "/tmp/$FILENAME" --repo "$REPO_FULL" --title "$TAG_LATEST" --notes "Tag: $UPSTREAM_TAG | SHA256: $UPSTREAM_HASH"
-
-              ALL_TAGS=$(gh api "repos/$REPO_FULL/releases" --jq 'sort_by(.created_at) | reverse | .[].tag_name' | grep "^${TAG_PREFIX}" | grep -vE 'latest|back')
-              COUNT=$(echo "$ALL_TAGS" | wc -l)
-              if [ "$COUNT" -gt "$KEEP" ]; then
-                TO_DELETE=$(echo "$ALL_TAGS" | tail -n +$((KEEP+1)))
-                for T in $TO_DELETE; do
-                  gh release delete "$T" --repo "$REPO_FULL" --yes
-                done
-              fi
+              # 2. UPLOAD NEW LATEST (Overwrite existing latest)
+              gh release upload "$DIST_TAG" "/tmp/$FILENAME" --repo "$REPO_FULL" --clobber
+              
+              # 3. UPDATE DESCRIPTION WITH VERSIONS
+              # If PREV_VERSION_TAG was "None" (first run), we just leave it as None or handle gracefully.
+              # If we are updating, PREV_VERSION_TAG becomes the new "Back" version.
+              
+              NEW_NOTES="
+              # Status
+              | Type | Version | SHA256 (Start) |
+              | :--- | :--- | :--- |
+              | 🟢 **Current (latest)** | **$UPSTREAM_TAG** | \`$UPSTREAM_HASH\` |
+              | 🟠 **Previous (back)** | **$PREV_VERSION_TAG** | (Previous Stable) |
+              
+              *Updated: $(date)*
+              "
+              
+              gh release edit "$DIST_TAG" --repo "$REPO_FULL" --notes "$NEW_NOTES"
               ;;
           esac
         env:
