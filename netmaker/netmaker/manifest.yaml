@@ -1,0 +1,5 @@
+type: container
+source: gravitl/netmaker
+source_repo: gravitl/netmaker
+target: ghcr.io/yabloky/netmaker
+keep_versions: 2
