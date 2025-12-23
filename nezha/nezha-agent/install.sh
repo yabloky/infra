@@ -112,7 +112,7 @@ install() {
     echo "Installing..."
 
     # Единственный источник — ваш релиз
-    NZ_AGENT_URL="https://github.com/yabloky/infra/releases/download/nezha-agent-latest/nezha-agent_${os}_${os_arch}.zip"
+    NZ_AGENT_URL="https://github.com/yabloky/infra/releases/download/nezha-agent/nezha-agent_${os}_${os_arch}.zip"
 
     if command -v wget >/dev/null 2>&1; then
         _cmd="wget --timeout=60 -O /tmp/nezha-agent_${os}_${os_arch}.zip \"$NZ_AGENT_URL\" >/dev/null 2>&1"
