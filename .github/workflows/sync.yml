@@ -139,9 +139,8 @@ jobs:
               fi
 
               # --- GET PREVIOUS VERSION INFO FROM DESCRIPTION ---
-              # We read the current description to find out what version is CURRENTLY there before we overwrite it.
               OLD_NOTES=$(gh release view "$DIST_TAG" --repo "$REPO_FULL" --json body -q .body || echo "")
-              # Extract the version after "Current: "
+              # Regex adapted for new simple format: "🟢 Current: vX.X.X"
               PREV_VERSION_TAG=$(echo "$OLD_NOTES" | grep -oE 'Current: \S+' | awk '{print $2}' || echo "None")
               
               # Download current local 'latest' to check hash
@@ -167,19 +166,14 @@ jobs:
               # 2. UPLOAD NEW LATEST (Overwrite existing latest)
               gh release upload "$DIST_TAG" "/tmp/$FILENAME" --repo "$REPO_FULL" --clobber
               
-              # 3. UPDATE DESCRIPTION WITH VERSIONS
-              # If PREV_VERSION_TAG was "None" (first run), we just leave it as None or handle gracefully.
-              # If we are updating, PREV_VERSION_TAG becomes the new "Back" version.
+              # 3. UPDATE DESCRIPTION (CLEAN UI)
+              NEW_NOTES="🟢 Current: $UPSTREAM_TAG
+              Hash: \`$UPSTREAM_HASH\`
               
-              NEW_NOTES="
-              # Status
-              | Type | Version | SHA256 (Start) |
-              | :--- | :--- | :--- |
-              | 🟢 **Current (latest)** | **$UPSTREAM_TAG** | \`$UPSTREAM_HASH\` |
-              | 🟠 **Previous (back)** | **$PREV_VERSION_TAG** | (Previous Stable) |
+              🟠 Previous: $PREV_VERSION_TAG
+              (Renamed to: ${FILENAME}-back)
               
-              *Updated: $(date)*
-              "
+              _Updated: $(date)_"
               
               gh release edit "$DIST_TAG" --repo "$REPO_FULL" --notes "$NEW_NOTES"
               ;;
