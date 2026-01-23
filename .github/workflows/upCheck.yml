@@ -30,6 +30,8 @@ jobs:
           OWNER: ${{ github.repository_owner }}
           REPO: ${{ github.repository }}
         run: |
+          # Calculate date for the issue title
+          echo "ISSUE_DATE=$(date +'%Y-%m-%d')" >> $GITHUB_ENV
           # Create report file
           REPORT_FILE="report.md"
           
@@ -112,10 +114,8 @@ jobs:
 
       - name: Create Issue
         uses: peter-evans/create-issue-from-file@v5
-        env:
-          REPORT_DATE: $(date +'%Y-%m-%d')
         with:
-          title: "Weekly Update Report: ${{ env.REPORT_DATE }}"
+          title: "Weekly Update Report: ${{ env.ISSUE_DATE }}"
           content-filepath: ./report.md
           labels: |
             automation
