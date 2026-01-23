@@ -1,7 +1,7 @@
-name: Update Check
+name: Weekly Update Check
 
 on:
-  workflow_dispatch: # Чтобы ты мог ткнуть кнопку "Проверить сейчас"
+  workflow_dispatch:
   schedule:
     - cron: '0 8 * * 1'
 
@@ -30,12 +30,13 @@ jobs:
           OWNER: ${{ github.repository_owner }}
           REPO: ${{ github.repository }}
         run: |
+          # Create report file
+          REPORT_FILE="report.md"
           
-          echo "REPORT_BODY<<EOF" >> $GITHUB_ENV
-          echo "## 🚀 Weekly Update Status ($(date +'%Y-%m-%d'))" >> $GITHUB_ENV
-          echo "" >> $GITHUB_ENV
-          echo "| Component | Type | Local Version | Upstream Version | Status |" >> $GITHUB_ENV
-          echo "| :--- | :--- | :--- | :--- | :--- |" >> $GITHUB_ENV
+          echo "## 🚀 Weekly Update Status ($(date +'%Y-%m-%d'))" > $REPORT_FILE
+          echo "" >> $REPORT_FILE
+          echo "| Component | Type | Local Version | Upstream Version | Status |" >> $REPORT_FILE
+          echo "| :--- | :--- | :--- | :--- | :--- |" >> $REPORT_FILE
 
           # Iterate over manifests
           find . -name "manifest.yaml" | sort | while read -r manifest; do
@@ -52,10 +53,8 @@ jobs:
             if [ -z "$SOURCE_REPO" ]; then continue; fi
 
             # 1. Fetch Upstream Version
-            # Берем последний релиз у автора
             UPSTREAM_JSON=$(curl -s -H "Authorization: token ${GH_TOKEN}" "https://api.github.com/repos/${SOURCE_REPO}/releases/latest")
             UPSTREAM_TAG=$(echo "$UPSTREAM_JSON" | jq -r '.tag_name // empty')
-            
             
             if [ -z "$UPSTREAM_TAG" ]; then UPSTREAM_TAG="Error/Unknown"; fi
 
@@ -63,7 +62,7 @@ jobs:
             LOCAL_TAG="Not Found"
 
             if [ "$TYPE" == "container" ]; then
-              # Resolve container image name            
+              # Resolve container image name
               if [ -n "$TARGET_NAME" ]; then 
                  IMG_NAME="${TARGET_NAME##*/}"
               else
@@ -86,7 +85,6 @@ jobs:
 
             # 3. Compare and Determine Status
             CLEAN_UPSTREAM=$(echo "$UPSTREAM_TAG" | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | head -n1)
-            
             STATUS="🟢 Up to date"
             
             # Logic: If tags mismatch and cleaned version mismatches -> Update needed
@@ -98,17 +96,15 @@ jobs:
                STATUS="⚠️ Check Repo"
             fi
             
-            # Append to report
-            echo "| **$NAME** | $TYPE | \`$LOCAL_TAG\` | \`$UPSTREAM_TAG\` | $STATUS |" >> $GITHUB_ENV
+            # Append to report file
+            echo "| **$NAME** | $TYPE | \`$LOCAL_TAG\` | \`$UPSTREAM_TAG\` | $STATUS |" >> $REPORT_FILE
           done
-
-          echo "EOF" >> $GITHUB_ENV
 
       - name: Create Issue
         uses: peter-evans/create-issue-from-file@v5
         with:
           title: "Weekly Update Report: $(date +'%Y-%m-%d')"
-          content: ${{ env.REPORT_BODY }}
+          content-filepath: ./report.md
           labels: |
             automation
             updates
