@@ -100,10 +100,22 @@ jobs:
             echo "| **$NAME** | $TYPE | \`$LOCAL_TAG\` | \`$UPSTREAM_TAG\` | $STATUS |" >> $REPORT_FILE
           done
 
+      - name: Close Old Reports
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          # Find and close previous open update reports
+          previous_issues=$(gh issue list --label "updates" --state open --json number --jq '.[].number')
+          for issue in $previous_issues; do
+            gh issue close "$issue" --comment "Superseded by a new report."
+          done
+
       - name: Create Issue
         uses: peter-evans/create-issue-from-file@v5
+        env:
+          REPORT_DATE: $(date +'%Y-%m-%d')
         with:
-          title: "Weekly Update Report: $(date +'%Y-%m-%d')"
+          title: "Weekly Update Report: ${{ env.REPORT_DATE }}"
           content-filepath: ./report.md
           labels: |
             automation
