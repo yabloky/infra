@@ -1,0 +1,114 @@
+name: Update Check
+
+on:
+  workflow_dispatch: # Чтобы ты мог ткнуть кнопку "Проверить сейчас"
+  schedule:
+    - cron: '0 8 * * 1'
+
+permissions:
+  contents: read
+  packages: read
+  issues: write
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install tools
+        run: |
+          sudo apt-get update -y && sudo apt-get install -y jq
+          wget https://github.com/mikefarah/yq/releases/latest/download/yq_linux_amd64 -O /usr/local/bin/yq
+          chmod +x /usr/local/bin/yq
+
+      - name: Generate Report
+        id: report
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          OWNER: ${{ github.repository_owner }}
+          REPO: ${{ github.repository }}
+        run: |
+          
+          echo "REPORT_BODY<<EOF" >> $GITHUB_ENV
+          echo "## 🚀 Weekly Update Status ($(date +'%Y-%m-%d'))" >> $GITHUB_ENV
+          echo "" >> $GITHUB_ENV
+          echo "| Component | Type | Local Version | Upstream Version | Status |" >> $GITHUB_ENV
+          echo "| :--- | :--- | :--- | :--- | :--- |" >> $GITHUB_ENV
+
+          # Iterate over manifests
+          find . -name "manifest.yaml" | sort | while read -r manifest; do
+            DIR=$(dirname "$manifest")
+            NAME=$(basename "$DIR")
+            
+            # Parse manifest config
+            TYPE=$(yq '.type' "$manifest")
+            SOURCE_REPO=$(yq '.source_repo // ""' "$manifest")
+            TAG_PREFIX=$(yq '.tag_prefix // ""' "$manifest")
+            TARGET_NAME=$(yq '.target // ""' "$manifest")
+
+            # Skip if no upstream source defined
+            if [ -z "$SOURCE_REPO" ]; then continue; fi
+
+            # 1. Fetch Upstream Version
+            # Берем последний релиз у автора
+            UPSTREAM_JSON=$(curl -s -H "Authorization: token ${GH_TOKEN}" "https://api.github.com/repos/${SOURCE_REPO}/releases/latest")
+            UPSTREAM_TAG=$(echo "$UPSTREAM_JSON" | jq -r '.tag_name // empty')
+            
+            
+            if [ -z "$UPSTREAM_TAG" ]; then UPSTREAM_TAG="Error/Unknown"; fi
+
+            # 2. Fetch Local Version
+            LOCAL_TAG="Not Found"
+
+            if [ "$TYPE" == "container" ]; then
+              # Resolve container image name            
+              if [ -n "$TARGET_NAME" ]; then 
+                 IMG_NAME="${TARGET_NAME##*/}"
+              else
+                 SOURCE_RAW=$(yq '.source // ""' "$manifest")
+                 IMG_NAME="${SOURCE_RAW##*/}"
+              fi
+              
+              # Get latest non-meta tag from GHCR
+              LOCAL_TAG=$(gh api -H "Accept: application/vnd.github+json" "/users/${OWNER}/packages/container/${IMG_NAME}/versions" 2>/dev/null | jq -r 'map(select(.metadata.container.tags | length > 0)) | sort_by(.created_at) | reverse | .[].metadata.container.tags[]?' | grep -vE 'latest|back' | head -n 1 || echo "None")
+
+            elif [ "$TYPE" == "release-binary" ]; then
+               # Resolve binary release tag
+               DIST_TAG=$(echo "$TAG_PREFIX" | sed 's/-$//')
+               [ -z "$DIST_TAG" ] && DIST_TAG="${NAME}"
+               
+               # Extract version from release body
+               RELEASE_BODY=$(gh release view "$DIST_TAG" --repo "$REPO" --json body -q .body 2>/dev/null || echo "")
+               LOCAL_TAG=$(echo "$RELEASE_BODY" | grep -oE 'Current: \S+' | awk '{print $2}' || echo "None")
+            fi
+
+            # 3. Compare and Determine Status
+            CLEAN_UPSTREAM=$(echo "$UPSTREAM_TAG" | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | head -n1)
+            
+            STATUS="🟢 Up to date"
+            
+            # Logic: If tags mismatch and cleaned version mismatches -> Update needed
+            if [ "$LOCAL_TAG" != "$UPSTREAM_TAG" ] && [ "$LOCAL_TAG" != "$CLEAN_UPSTREAM" ]; then
+               STATUS="🔴 **UPDATE**"
+            fi
+            
+            if [ "$UPSTREAM_TAG" == "Error/Unknown" ]; then
+               STATUS="⚠️ Check Repo"
+            fi
+            
+            # Append to report
+            echo "| **$NAME** | $TYPE | \`$LOCAL_TAG\` | \`$UPSTREAM_TAG\` | $STATUS |" >> $GITHUB_ENV
+          done
+
+          echo "EOF" >> $GITHUB_ENV
+
+      - name: Create Issue
+        uses: peter-evans/create-issue-from-file@v5
+        with:
+          title: "Weekly Update Report: $(date +'%Y-%m-%d')"
+          content: ${{ env.REPORT_BODY }}
+          labels: |
+            automation
+            updates
