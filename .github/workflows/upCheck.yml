@@ -102,20 +102,24 @@ jobs:
             echo "| **$NAME** | $TYPE | \`$LOCAL_TAG\` | \`$UPSTREAM_TAG\` | $STATUS |" >> $REPORT_FILE
           done
 
-        - name: Create and Label Issue
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          # 1. Find ANY open update reports by title pattern and close them
-          # Search by title is safer if labels fail
-          old_issues=$(gh issue list --search "Weekly Update Report in:title" --state open --json number --jq '.[].number')
-          
-          for issue in $old_issues; do
-            gh issue close "$issue" --comment "Superseded by a new report."
-          done
-
-          # 2. Create NEW issue using GH CLI (more stable than 3rd party actions)
-          gh issue create \
-            --title "Weekly Update Report: ${{ env.ISSUE_DATE }}" \
-            --body-file ./report.md \
-            --label "automation,updates"
+          - name: Create and Label Issue
+          env:
+            GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          run: |
+            # 1. Ensure labels exist (ignore error if they already exist)
+            gh label create automation --color "0E8A16" --force || true
+            gh label create updates --color "FBCA04" --force || true
+  
+            # 2. Find ANY open update reports by title pattern and close them
+            # This works even if the issue has no labels
+            old_issues=$(gh issue list --search "Weekly Update Report in:title" --state open --json number --jq '.[].number')
+            
+            for issue in $old_issues; do
+              gh issue close "$issue" --comment "Superseded by a new report."
+            done
+  
+            # 3. Create NEW issue using GH CLI
+            gh issue create \
+              --title "Weekly Update Report: ${{ env.ISSUE_DATE }}" \
+              --body-file ./report.md \
+              --label "automation,updates"
