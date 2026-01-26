@@ -102,21 +102,20 @@ jobs:
             echo "| **$NAME** | $TYPE | \`$LOCAL_TAG\` | \`$UPSTREAM_TAG\` | $STATUS |" >> $REPORT_FILE
           done
 
-      - name: Close Old Reports
+- name: Create and Label Issue
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          # Find and close previous open update reports
-          previous_issues=$(gh issue list --label "updates" --state open --json number --jq '.[].number')
-          for issue in $previous_issues; do
+          # 1. Find ANY open update reports by title pattern and close them
+          # Search by title is safer if labels fail
+          old_issues=$(gh issue list --search "Weekly Update Report in:title" --state open --json number --jq '.[].number')
+          
+          for issue in $old_issues; do
             gh issue close "$issue" --comment "Superseded by a new report."
           done
 
-      - name: Create Issue
-        uses: peter-evans/create-issue-from-file@v5
-        with:
-          title: "Weekly Update Report: ${{ env.ISSUE_DATE }}"
-          content-filepath: ./report.md
-          labels: |
-            automation
-            updates
+          # 2. Create NEW issue using GH CLI (more stable than 3rd party actions)
+          gh issue create \
+            --title "Weekly Update Report: ${{ env.ISSUE_DATE }}" \
+            --body-file ./report.md \
+            --label "automation,updates"
