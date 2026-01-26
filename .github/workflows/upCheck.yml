@@ -102,7 +102,7 @@ jobs:
             echo "| **$NAME** | $TYPE | \`$LOCAL_TAG\` | \`$UPSTREAM_TAG\` | $STATUS |" >> $REPORT_FILE
           done
 
-- name: Create and Label Issue
+        - name: Create and Label Issue
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
