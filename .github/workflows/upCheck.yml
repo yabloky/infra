@@ -99,7 +99,7 @@ jobs:
             fi
             
             # Append to report file
-            echo "| **$NAME** | $TYPE | \`$LOCAL_TAG\` | \`$UPSTREAM_TAG\` | $STATUS |" >> $REPORT_FILE
+            echo "| [**$NAME**](https://github.com/$SOURCE_REPO/releases) | $TYPE | \`$LOCAL_TAG\` | \`$UPSTREAM_TAG\` | $STATUS |" >> $REPORT_FILE
           done
 
       - name: Create and Label Issue
