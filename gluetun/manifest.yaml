@@ -1,0 +1,5 @@
+type: container
+source: qmcgaw/gluetun
+source_repo: qdm12/gluetun
+target: ghcr.io/yabloky/gluetun
+keep_versions: 2
