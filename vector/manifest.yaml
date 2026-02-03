@@ -3,3 +3,4 @@ source: timberio/vector
 source_repo: timberio/vector
 target: ghcr.io/yabloky/vector
 keep_versions: 2
+source_tag: "latest-debian"
