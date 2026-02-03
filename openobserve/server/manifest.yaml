@@ -1,0 +1,5 @@
+type: container
+source: openobserve/openobserve
+source_repo: openobserve/openobserve
+target: ghcr.io/yabloky/openobserve
+keep_versions: 2
