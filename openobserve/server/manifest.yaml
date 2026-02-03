@@ -1,5 +1,5 @@
 type: container
-source: openobserve/openobserve
+source: public.ecr.aws/zinclabs/openobserve-enterprise
 source_repo: openobserve/openobserve
-target: ghcr.io/yabloky/openobserve
+target: ghcr.io/yabloky/openobserve-enterprise
 keep_versions: 2
