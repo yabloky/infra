@@ -48,6 +48,9 @@ jobs:
           echo "asset_pattern=$(yq '.asset_pattern // ""' "$MANIFEST")" >> $GITHUB_OUTPUT
           echo "target_path=$(yq '.target_path // "."' "$MANIFEST")" >> $GITHUB_OUTPUT
           echo "tag_prefix=$(yq '.tag_prefix // ""' "$MANIFEST")" >> $GITHUB_OUTPUT
+          
+          # Читаем кастомный тег, если нет - ставим latest
+          echo "source_tag=$(yq '.source_tag // "latest"' "$MANIFEST")" >> $GITHUB_OUTPUT
 
           TARGET_OVERRIDE=$(yq '.target // ""' "$MANIFEST")
           if [ -n "$TARGET_OVERRIDE" ]; then
@@ -66,15 +69,16 @@ jobs:
           SOURCE_REPO="${{ steps.manifest.outputs.source_repo }}"
           ASSET_PATTERN="${{ steps.manifest.outputs.asset_pattern }}"
           TAG_PREFIX="${{ steps.manifest.outputs.tag_prefix }}"
+          SOURCE_TAG="${{ steps.manifest.outputs.source_tag }}"
 
           case "$TYPE" in
             container)
-              echo "Syncing container: $SOURCE → $TARGET"
+              echo "Syncing container: $SOURCE:$SOURCE_TAG → $TARGET"
               RAW_TAG=$(curl -s -H "Authorization: token ${GH_TOKEN}" "https://api.github.com/repos/${SOURCE_REPO}/releases/latest" | jq -r '.tag_name // empty')
               CLEAN_VERSION=$(echo "$RAW_TAG" | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | head -n1)
               
-              docker pull "$SOURCE:latest"
-              UPSTREAM_ID=$(docker inspect --format='{{.Id}}' "$SOURCE:latest")
+              docker pull "$SOURCE:$SOURCE_TAG"
+              UPSTREAM_ID=$(docker inspect --format='{{.Id}}' "$SOURCE:$SOURCE_TAG")
               
               LOCAL_LATEST_ID=""
               if docker pull "$TARGET:latest" > /dev/null 2>&1; then
@@ -91,11 +95,11 @@ jobs:
               fi
 
               if [ -n "$CLEAN_VERSION" ]; then
-                docker tag "$SOURCE:latest" "$TARGET:$CLEAN_VERSION"
+                docker tag "$SOURCE:$SOURCE_TAG" "$TARGET:$CLEAN_VERSION"
                 docker push "$TARGET:$CLEAN_VERSION"
               fi
               
-              docker tag "$SOURCE:latest" "$TARGET:latest"
+              docker tag "$SOURCE:$SOURCE_TAG" "$TARGET:latest"
               docker push "$TARGET:latest"
 
               ALL_VERSIONS=$(gh api -H "Accept: application/vnd.github+json" "/users/${{ github.actor }}/packages/container/${TARGET##*/}/versions" | jq -r 'map(select(.metadata.container.tags | length > 0)) | sort_by(.created_at) | reverse | .[].metadata.container.tags[]?' | grep -vE 'latest|back' | uniq)
@@ -147,7 +151,7 @@ jobs:
               LOCAL_HASH=""
               mkdir -p /tmp/local
               if gh release download "$DIST_TAG" --repo "$REPO_FULL" -p "$FILENAME" -D "/tmp/local" >/dev/null 2>&1; then
-                 LOCAL_HASH=$(sha256sum "/tmp/local/$FILENAME" | awk '{print $1}')
+                  LOCAL_HASH=$(sha256sum "/tmp/local/$FILENAME" | awk '{print $1}')
               fi
 
               if [ "$LOCAL_HASH" == "$UPSTREAM_HASH" ]; then
