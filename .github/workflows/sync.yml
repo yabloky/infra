@@ -49,7 +49,7 @@ jobs:
           echo "target_path=$(yq '.target_path // "."' "$MANIFEST")" >> $GITHUB_OUTPUT
           echo "tag_prefix=$(yq '.tag_prefix // ""' "$MANIFEST")" >> $GITHUB_OUTPUT
           
-          # Added source_tag support (defaults to latest)
+          # Added source_tag reading. Defaults to "latest" if not specified.
           echo "source_tag=$(yq '.source_tag // "latest"' "$MANIFEST")" >> $GITHUB_OUTPUT
 
           TARGET_OVERRIDE=$(yq '.target // ""' "$MANIFEST")
