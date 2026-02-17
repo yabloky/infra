@@ -1,0 +1,5 @@
+type: container
+source: docker.io/grafana/grafana-oss
+source_repo: grafana/grafana
+keep_versions: 2
+target: ghcr.io/yabloky/grafana-oss
