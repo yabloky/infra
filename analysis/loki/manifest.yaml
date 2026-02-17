@@ -1,0 +1,5 @@
+type: container
+source: docker.io/grafana/loki
+source_repo: grafana/loki
+keep_versions: 2
+target: ghcr.io/yabloky/loki
