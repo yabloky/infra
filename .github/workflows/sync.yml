@@ -1,4 +1,4 @@
-name: Mirror Container Images & Binaries
+name: Mirror Container Images - Binaries
 
 on:
   workflow_dispatch:
