@@ -2,4 +2,5 @@ type: container
 source: ghcr.io/moghtech/komodo-core
 source_repo: moghtech/komodo
 target: ghcr.io/yabloky/komodo-core
+source_tag: "2"
 keep_versions: 2
