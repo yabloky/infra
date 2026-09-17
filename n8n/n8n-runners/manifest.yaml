@@ -1,0 +1,5 @@
+type: container
+source: docker.io/n8nio/runners
+source_repo: n8n-io/n8n
+keep_versions: 2
+target: ghcr.io/yabloky/n8n-runners
