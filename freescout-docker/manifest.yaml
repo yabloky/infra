@@ -1,5 +1,5 @@
 type: container
-source: tiredofit/freescout
-source_repo: tiredofit/docker-freescout
+source: nfrastack/freescout
+source_repo: nfrastack/container-freescout
 keep_versions: 2
 target: ghcr.io/yabloky/docker-freescout
