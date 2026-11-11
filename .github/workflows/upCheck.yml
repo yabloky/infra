@@ -55,7 +55,7 @@ jobs:
             if [ -z "$SOURCE_REPO" ]; then continue; fi
 
             # 3. Fetch Upstream Data (Tag and Date)
-            UPSTREAM_JSON=$(curl -s -H "Authorization: token ${GH_TOKEN}" "https://api.github.com/repos/${SOURCE_REPO}/releases/latest")
+            UPSTREAM_JSON=$(curl -sL -H "Authorization: token ${GH_TOKEN}" "https://api.github.com/repos/${SOURCE_REPO}/releases/latest")
             UPSTREAM_TAG=$(echo "$UPSTREAM_JSON" | jq -r '.tag_name // empty' | sed 's/^n8n@//')
             
             # Extract only YYYY-MM-DD from published_at
