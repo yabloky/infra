@@ -1,6 +1,6 @@
 type: container
 source: timberio/vector
-source_repo: timberio/vector
+source_repo: vectordotdev/vector
 target: ghcr.io/yabloky/vector
 keep_versions: 2
 source_tag: "latest-debian"
